@@ -2,17 +2,12 @@
 //
 // The nightly job (worker/jobs/nightly.mjs) writes each line it puts on a
 // page as a "learning-change" row whose id is the first CHANGE_ID_CHARS hex
-// characters of a hash; the digest prints the line as `[<id>] file: ...`.
-// Tom names the line back by that id — bracketed as printed, or bare, and at
-// least CHANGE_ID_MIN_CHARS of it — from two places that must agree:
-//
-//   convex/ttsSlack.ts, when his reply lands under the digest or an hourly
-//     update, writes the "learning-objection" row with the full id;
-//   worker/jobs/nightly.mjs, the next night, matches each objection to the
-//     change it reverts.
+// characters of a hash. Tom names the line back by that id — bracketed or
+// bare, and at least CHANGE_ID_MIN_CHARS of it — and the nightly job matches
+// each objection to the change it reverts.
 //
 // A token is only a name when a recorded change's id starts with it: a commit
-// hash printed in the same digest, or a word spelled in hex letters, names
+// hash printed in another context, or a word spelled in hex letters, names
 // nothing. Plain ESM with no imports (markdown-sections.mjs's arrangement):
 // the box's Node loads no TypeScript and Convex's bundle has no filesystem.
 

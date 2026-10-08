@@ -1,14 +1,11 @@
 import { convexTest } from "convex-test";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import schema from "./schema";
-import { resolveId } from "./jarvis/tables";
-import { gatherTodayFacts } from "./ttsDigest";
-import { nyCalendarDayKey } from "./ttsShared";
 import { insertCopied } from "../test/core-tables";
 
 // The box's work queue posts each finished agent's outcome to POST
 // /jarvis/event with the todo as subject, in either id form (convex/jarvis/
-// tables.ts), and the digest and the weekly count it on that todo.
+// tables.ts).
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -112,53 +109,4 @@ describe("a work-queue outcome on its todo", () => {
     }
   });
 
-  it("is counted on its todo in the digest, one finished run per outcome, and an errored one is a failure line", async () => {
-    vi.stubEnv("JARVIS_KEY", KEY);
-    const t = convexTest({ schema, modules });
-    const { old, plain } = await seed(t);
-    const now = Date.now();
-    await post(t, outcome(old.todo, now - 3 * 3_600_000));
-    await post(t, outcome(plain.todo, now - 2 * 3_600_000, "errored"));
-    // The copy of a POST /tts/event row names its key, not a todo: not read here.
-    await t.run(async (ctx) => {
-      await ctx.db.insert("events", { kind: "session-outcome", at: now - 3_600_000, provenance: {}, subject: `work-queue:${old.todo}:1`, data: {} });
-    });
-    const facts = await t.run(async (ctx) => gatherTodayFacts(ctx, { day: nyCalendarDayKey(now), now, since: now - DAY }));
-    expect(facts.overnightByTodo).toEqual([
-      expect.objectContaining({ todoId: plain.todo, statement: "renew the lease", finished: 2 }),
-    ]);
-    expect(facts.broken.filter((row) => row.statement.startsWith("A session ended in an error"))).toHaveLength(1);
-  });
-
-  // witness: the read of the window's outcomes took the OLDEST 2,000, so a
-  // busy night left its newest outcomes out of the digest.
-  it("counts the night's newest outcome however many came before it", async () => {
-    const t = convexTest({ schema, modules });
-    const { plain } = await seed(t);
-    const now = Date.now();
-    const newest = await t.run(async (ctx) => {
-      const other = (await insertCopied(ctx, "todos", {
-        statement: "the last one worked",
-        readiness: "prepared",
-        status: "active",
-        timingClass: "whenever",
-        source: "test",
-        createdAt: now,
-        updatedAt: now,
-      })).old;
-      const otherPlain = (await resolveId(ctx, "todos", other))!;
-      for (let n = 0; n < 2000; n += 1) {
-        await ctx.db.insert("events", { kind: "session-outcome", at: now - 5 * 3_600_000 + n, provenance: {}, subject: plain.todo, data: { outcome: "completed" } });
-      }
-      await ctx.db.insert("events", { kind: "session-outcome", at: now - 60_000, provenance: {}, subject: otherPlain, data: { outcome: "completed" } });
-      return otherPlain;
-    });
-    const facts = await t.run(async (ctx) => gatherTodayFacts(ctx, { day: nyCalendarDayKey(now), now, since: now - DAY }));
-    expect(facts.overnightByTodo).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ todoId: newest, statement: "the last one worked", finished: 1 }),
-        expect.objectContaining({ todoId: plain.todo, finished: 1999 }),
-      ]),
-    );
-  });
 });

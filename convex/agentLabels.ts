@@ -1,14 +1,13 @@
 // agentLabels.ts — everywhere Tom's judgment enters becomes a row about an agent.
 //
 // A LABEL is one act of Tom's about one run's output: a ruling on the todo a
-// prepare pass wrote, an objection on the digest's objection list to a
-// decision the delegate took, a reply he typed at a session, an emoji on the
-// morning digest. Four doors, all of them already built and none of them
+// prepare pass wrote, an objection to a decision the delegate took, or a reply
+// he typed at a session. Three doors, all of them already built and none of them
 // writing anything until this file existed — `runLabels` had no writer and no
 // row, which is why the run page's label strip was deferred and why the evals
 // layer could only mine the WikiTom nightly snapshot for its golden set.
 //
-// ONE WRITER, ONE RESOLVER, FOUR CALLERS. The callers differ only in where
+// ONE WRITER, ONE RESOLVER, THREE CALLERS. The callers differ only in where
 // they find the run and what the act meant; everything else — idempotency, the
 // refusal of a non-Tom actor, the shape of the row — is decided once here.
 //
@@ -27,16 +26,13 @@ import type { MutationCtx } from "./_generated/server";
 import { logEvent } from "./tts";
 import { DELEGATE_DECISION, recordedDecision } from "./ttsAsk";
 import { MERGE } from "./ttsMerge";
-import { DIGEST_SENT } from "./ttsDigest";
-import { DIGEST_OBJECTION_LOOKBACK } from "./ttsAsk";
 import { todoReader } from "./jarvis/tables";
 
-/** The four doors, in the schema's own words. */
+/** The remaining judgment doors, in the schema's own words. */
 const LABEL_SOURCE = v.union(
   v.literal("ruling"),
   v.literal("objection"),
   v.literal("session-reply"),
-  v.literal("digest-reaction"),
 );
 
 const LABEL_POLARITY = v.union(
@@ -50,39 +46,10 @@ const LABEL_POLARITY = v.union(
  *  corpus look like a clean one, and a counted absence is a fact the weekly
  *  gather can report and a later backlog import can repair. */
 const AGENT_LABEL_UNLINKED = "agent-label-unlinked";
-/** An emoji nobody mapped. It says what Tom reaches for, which is worth
- *  having; guessing its polarity would put an invented judgment in the
- *  corpus. */
-const REACTION_UNMAPPED = "reaction-unmapped";
 
 /** A session reply is trimmed to this many characters for `meaning`. The full
  *  text is in the transcript row the span names, so nothing is lost. */
 const MEANING_MAX_CHARS = 300;
-
-/**
- * THE EMOJI SET, small and unambiguous, defined once.
- *
- * Anything not here writes a `reaction-unmapped` event and NO label. The set
- * grows by a ruling of Tom's, never by a model's reading of what an emoji
- * probably meant.
- */
-export const REACTION_POLARITY: Record<string, { polarity: "good" | "bad" | "neutral"; judgment: boolean }> = {
-  "+1": { polarity: "good", judgment: true },
-  white_check_mark: { polarity: "good", judgment: true },
-  heavy_check_mark: { polarity: "good", judgment: true },
-  tada: { polarity: "good", judgment: true },
-  "-1": { polarity: "bad", judgment: true },
-  x: { polarity: "bad", judgment: true },
-  heavy_multiplication_x: { polarity: "bad", judgment: true },
-  confused: { polarity: "bad", judgment: true },
-  eyes: { polarity: "neutral", judgment: false },
-};
-
-/** Slack delivers a skin-toned emoji as `+1::skin-tone-3`; the base name is
- *  the one that was tapped. */
-export function baseEmoji(name: string): string {
-  return String(name ?? "").split("::")[0];
-}
 
 /**
  * `meaning` is plain present-tense text with no id, date, quote mark or
@@ -168,7 +135,7 @@ export const internalWriteLabel = internalMutation({
 type LabelInput = {
   runId: string;
   rowSpan?: { seqStart: number; seqEnd: number };
-  source: "ruling" | "objection" | "session-reply" | "digest-reaction";
+  source: "ruling" | "objection" | "session-reply";
   actor: string;
   polarity: "good" | "bad" | "mixed" | "neutral";
   meaning: string;
@@ -190,8 +157,8 @@ async function writeLabel(
   if (args.ref.trim() === "") throw new Error("a label needs the ref of the act behind it");
   const fault = meaningFault(args.meaning);
   if (fault !== null) throw new Error(fault);
-  // Slack delivers at least once and two doors can write one ruling, so the
-  // act's own key is the idempotency key.
+  // A retried delivery and two doors can write one ruling, so the act's own
+  // key is the idempotency key.
   const existing = await ctx.db
     .query("runLabels")
     .withIndex("by_ref", (q) => q.eq("ref", args.ref))
@@ -297,7 +264,7 @@ export const internalLabelFromRuling = internalMutation({
   },
 });
 
-// ── Writer two: an objection on the digest's objection list ─────────────────
+// ── Writer two: an objection to a recorded decision ─────────────────────────
 
 /**
  * `revert` and a redirect sentence are BOTH "bad".
@@ -478,84 +445,3 @@ export function plainMeaning(text: string): string {
     .replace(/\s+/g, " ")
     .trim();
 }
-
-// ── Writer four: a reaction on the digest ───────────────────────────────────
-
-export const internalLabelFromReaction = internalMutation({
-  args: {
-    channel: v.string(),
-    ts: v.string(),
-    emoji: v.string(),
-    at: v.number(),
-    removed: v.boolean(),
-  },
-  handler: async (ctx, { channel, ts, emoji, at, removed }) => {
-    const name = baseEmoji(emoji);
-    const ref = `reaction:${channel}:${ts}:${name}`;
-    // A REMOVED REACTION DELETES ITS OWN LABEL, at exactly this ref. An emoji
-    // tapped by accident must not become an eval case forever, and by_ref
-    // makes the delete a point lookup.
-    if (removed) {
-      const existing = await ctx.db
-        .query("runLabels")
-        .withIndex("by_ref", (q) => q.eq("ref", ref))
-        .first();
-      if (existing !== null) await ctx.db.delete(existing._id);
-      return { removed: existing !== null };
-    }
-    // The digest this reaction sat on, among the mornings a model wrote: the
-    // legacy digest-sent rows in dtsEvents, which carry the writing run's
-    // token, on the same bounded newest-first take ttsSlack's namedObjection
-    // uses. A digest the box writes (the record's digest-sent rows) is
-    // deterministic and no run wrote it, so a reaction on one labels nothing
-    // and is not looked up; this read goes when the two-week lookback has
-    // passed the switch.
-    const sent = (
-      await ctx.db
-        .query("dtsEvents")
-        .withIndex("by_kind_key", (q) => q.eq("kind", DIGEST_SENT))
-        .order("desc")
-        .take(DIGEST_OBJECTION_LOOKBACK)
-    ).find((row) => {
-      // The retired model-written digest writer stored this as slackTs; the
-      // record-native deterministic writer uses ts in events, which is not read here.
-      const d = row.data as { slackTs?: unknown } | undefined;
-      return d?.slackTs === ts;
-    });
-    if (sent === undefined) return { wrote: false, why: "no digest was sent at that ts" };
-    const mapped = REACTION_POLARITY[name];
-    if (mapped === undefined) {
-      await logEvent(ctx, REACTION_UNMAPPED, undefined, { emoji: name, channel, ts, at });
-      return { wrote: false, why: "unmapped emoji" };
-    }
-    const data = (sent.data ?? {}) as { runToken?: unknown; writtenBy?: unknown; day?: unknown };
-    const run = await agentForToken(ctx, typeof data.runToken === "string" ? data.runToken : undefined);
-    if (run === null) {
-      // A morning the model path timed out has writtenBy "template" and no
-      // token. A reaction on it writes no label, and that is RIGHT: the plain
-      // template is not a run's output, and scoring the model on it would be a
-      // lie in the corpus.
-      await unlinked(ctx, {
-        source: "digest-reaction",
-        ref,
-        subjectKey: typeof data.day === "string" ? `digest:${data.day}` : null,
-        why: data.writtenBy === "template"
-          ? "the morning was written by the plain template, which is not an agent's output"
-          : "the digest-sent row carries no runToken, or no agent claimed it",
-      });
-      return { wrote: false, why: "unlinked" };
-    }
-    const written = await writeLabel(ctx, {
-      runId: run.runId,
-      ...(finalSpan(run) === undefined ? {} : { rowSpan: finalSpan(run) }),
-      source: "digest-reaction",
-      actor: "tom",
-      polarity: mapped.polarity,
-      meaning: `Tom reacted with ${name} to the morning digest`,
-      judgment: mapped.judgment,
-      ref,
-      at,
-    });
-    return { wrote: !written.existing, id: written.id, runId: run.runId };
-  },
-});

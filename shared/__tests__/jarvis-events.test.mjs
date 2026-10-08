@@ -65,8 +65,8 @@ describe("validateEvent", () => {
     expect(result).toMatchObject({ ok: true, event: { kind: "eval-run", subject: "wall", text: "wall: 3 of 3 pass" } });
   });
 
-  it("refuses a decision, a digest line or an eval run without its subject", () => {
-    for (const kind of ["decision", "digest-line", "eval-run"]) {
+  it("refuses a decision or an eval run without its subject", () => {
+    for (const kind of ["decision", "eval-run"]) {
       expect(validateEvent({ kind, data: {} })).toEqual({ ok: false, error: `a ${kind} event names its subject` });
       expect(validateEvent({ kind, subject: "s", data: {} }).ok).toBe(true);
     }
@@ -154,12 +154,8 @@ describe("validateEvent", () => {
 
   it("keeps thread events in their route-only lists", () => {
     expect(TOM_ONLY_KINDS).toContain("thread-message");
-    expect(RECORD_ONLY_KINDS).toContain("thread-digest");
     expect(SUBJECT_REQUIRED).toContain("thread-reply");
     expect(RECORD_ONLY_KINDS).toContain("silence-alarm");
-    expect(SUBJECT_REQUIRED).toContain("needs-you-opened");
-    expect(validateEvent({ kind: "needs-you-opened", data: { key: "k" }, text: "No subject." }))
-      .toEqual({ ok: false, error: "a needs-you-opened event names its subject" });
   });
 
   it("takes a job row's runtime as data.durationMs and keeps it", () => {
@@ -180,8 +176,6 @@ describe("validateEvent", () => {
         error: "a job-failed event names data.durationMs, when given, as non-negative milliseconds",
       });
     }
-    // Another kind's durationMs is that kind's business (a work-run carries its own).
-    expect(validateEvent({ kind: "digest-line", subject: "deploy", data: { durationMs: "n/a" } }).ok).toBe(true);
   });
 
   it("lists every kind once", () => {
@@ -566,8 +560,8 @@ describe("use, issue and presence rows", () => {
       expect(REPEATS_BY_DATA_ID).toContain(kind);
       expect(JARVIS_EVENT_ONLY_KINDS).toContain(kind);
     }
-    expect(THREAD_REPLY_KINDS).toEqual(["fact", "todo", "rule", "errand", "question", "issue", "no-issues", "leaving", "back", "answer"]);
-    expect(validateEvent({ kind: "thread-reply", subject: "m1", data: { kind: "no-issues" }, text: "working, written as a use row on digest: event e1" }).ok).toBe(true);
+    expect(THREAD_REPLY_KINDS).toEqual(["fact", "todo", "rule", "errand", "question", "issue", "no-issues", "leaving", "back"]);
+    expect(validateEvent({ kind: "thread-reply", subject: "m1", data: { kind: "no-issues" }, text: "working, written as a use row" }).ok).toBe(true);
   });
 });
 

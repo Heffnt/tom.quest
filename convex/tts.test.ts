@@ -6,7 +6,6 @@ import {
   countdownText,
   nyCalendarDayBoundsUtc,
   nyCalendarDayKey,
-  ttsDayBoundsUtc,
   ttsDayKey,
   ttsPrepDay,
   nyLocalHour,
@@ -41,34 +40,22 @@ describe("ttsShared time helpers", () => {
     expect(nyLocalHour(Date.UTC(2026, 7, 27, 9, 0))).toBe(5);
   });
 
-  it("prep and digest land on the SAME day key (the review-caught bug)", () => {
-    // Prep runs in the 4 a.m. hour, BEFORE the boundary; the digest at 5.
+  it("prep and the active queue land on the same day key", () => {
+    // Prep runs in the 4 a.m. hour, before the 5 a.m. day boundary.
     // ttsPrepDay must bridge them — ttsDayKey alone named yesterday at 4:45.
     const prepEdt = Date.UTC(2026, 7, 27, 8, 45); // 4:45 EDT
-    const digestEdt = Date.UTC(2026, 7, 27, 9, 0); // 5:00 EDT
-    expect(ttsPrepDay(prepEdt)).toBe(ttsDayKey(digestEdt));
+    const dayStartEdt = Date.UTC(2026, 7, 27, 9, 0); // 5:00 EDT
+    expect(ttsPrepDay(prepEdt)).toBe(ttsDayKey(dayStartEdt));
     const prepEst = Date.UTC(2026, 0, 15, 9, 45); // 4:45 EST
-    const digestEst = Date.UTC(2026, 0, 15, 10, 0); // 5:00 EST
-    expect(ttsPrepDay(prepEst)).toBe(ttsDayKey(digestEst));
+    const dayStartEst = Date.UTC(2026, 0, 15, 10, 0); // 5:00 EST
+    expect(ttsPrepDay(prepEst)).toBe(ttsDayKey(dayStartEst));
     // A midday --force re-prep rebuilds TODAY's queue, not tomorrow's.
     const noon = Date.UTC(2026, 7, 27, 16);
     expect(ttsPrepDay(noon)).toBe(ttsDayKey(noon));
   });
 
-  it("computes DST-correct day bounds (5 a.m. to 5 a.m. NY)", () => {
-    const edt = ttsDayBoundsUtc("2026-08-27");
-    expect(edt.start).toBe(Date.UTC(2026, 7, 27, 9)); // 5:00 EDT
-    expect(edt.end).toBe(Date.UTC(2026, 7, 28, 9));
-    const est = ttsDayBoundsUtc("2026-01-15");
-    expect(est.start).toBe(Date.UTC(2026, 0, 15, 10)); // 5:00 EST
-    expect(est.end).toBe(Date.UTC(2026, 0, 16, 10));
-    // Fall-back day: starts in EDT, ends in EST — 25 wall-clock hours.
-    const fall = ttsDayBoundsUtc("2026-10-31");
-    expect(fall.end - fall.start).toBe(25 * 3_600_000);
-  });
-
   // witness: make nyCalendarDayBoundsUtc use the 5 a.m. TTS boundary (or
-  // hand-roll start + 86_400_000) — the digest's day would cover the wrong
+  // hand-roll start + 86_400_000) — calendar-date arithmetic would cover the wrong
   // 24 hours.
   it("computes calendar-day bounds (NY midnight to midnight)", () => {
     const edt = nyCalendarDayBoundsUtc("2026-08-27");
@@ -228,54 +215,13 @@ describe("TTS todos", () => {
     const t = convexTest({ schema, modules });
     await t.mutation(internal.tts.internalCapture, {
       statement: "buy climbing tape",
-      source: "slack-capture",
-      provenance: "slack:#dump",
+      source: "email",
+      provenance: "gmail:message:1",
     });
     const todos = await t.run(async (ctx) => ctx.db.query("todos").collect());
     expect(todos).toHaveLength(1);
     expect(todos[0].readiness).toBe("unprepared");
-    expect(todos[0].source).toBe("slack-capture");
-  });
-
-  // ── Slack capture is idempotent on the message ts (Tom, 2026-08-30) ───────
-  // Legacy callers may still retry a capture carrying Slack coordinates.
-  // witness: delete the by_slackTs lookup from internalCapture and this goes
-  // red — every Slack retry mints a duplicate todo.
-  it("captures a Slack message once, however many times it is offered", async () => {
-    const t = convexTest({ schema, modules });
-    const first = await t.mutation(internal.tts.internalCapture, {
-      statement: "buy climbing tape",
-      source: "slack-capture",
-      provenance: "slack:#dump ts=1787875674.496329",
-      slackChannel: "C0DUMP",
-      slackTs: "1787875674.496329",
-    });
-    // The backstop re-offers the same message with its own provenance.
-    const second = await t.mutation(internal.tts.internalCapture, {
-      statement: "buy climbing tape",
-      source: "slack-capture",
-      provenance: "https://slack.example/archives/C0DUMP/p1787875674496329",
-      slackChannel: "C0DUMP",
-      slackTs: "1787875674.496329",
-    });
-    expect(second).toBe(first);
-    const todos = await t.run(async (ctx) => ctx.db.query("todos").collect());
-    expect(todos).toHaveLength(1);
-    expect(todos[0].slackTs).toBe("1787875674.496329");
-    expect(todos[0].slackChannel).toBe("C0DUMP");
-
-    // A capture with NO ts is unaffected — manual and agent captures must not
-    // collapse into each other.
-    await t.mutation(internal.tts.internalCapture, {
-      statement: "something else",
-      source: "prospecting",
-    });
-    await t.mutation(internal.tts.internalCapture, {
-      statement: "something else",
-      source: "prospecting",
-    });
-    const after = await t.run(async (ctx) => ctx.db.query("todos").collect());
-    expect(after).toHaveLength(3);
+    expect(todos[0].source).toBe("email");
   });
 
   it("returns the stored todo unchanged on a retry", async () => {
@@ -307,7 +253,7 @@ describe("TTS todos", () => {
     const t = convexTest({ schema, modules });
     await t.mutation(internal.tts.internalCapture, {
       statement: "buy climbing tape",
-      source: "slack-capture",
+      source: "email",
     });
     const [captured] = await t.run(async (ctx) =>
       ctx.db.query("todos").collect(),
@@ -429,7 +375,7 @@ describe("TTS annotations and the preparer", () => {
     const t = convexTest({ schema, modules });
     const id = await t.mutation(internal.tts.internalCapture, {
       statement: "still the planner's",
-      source: "slack-capture",
+      source: "email",
     });
     const stored = async () =>
       (await t.run(async (ctx) => ctx.db.get(id)))!;

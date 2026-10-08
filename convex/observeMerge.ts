@@ -11,8 +11,7 @@
 // change before it lands. The second is the landing itself: an approved change
 // whose two gate rows (tests, audit) are green is merged by the record, and the merge is
 // written through convex/ttsMerge.ts internalRecordMerge — the same door the
-// box posts through — so the digest, the objection list and the page all see
-// one merge and not two.
+// box posts through — so the record and the page see one merge and not two.
 //
 // NOTHING POLLS IN A LOOP. One scheduled action runs every five minutes
 // (convex/crons.ts): it refreshes the mirror and then tries the approved

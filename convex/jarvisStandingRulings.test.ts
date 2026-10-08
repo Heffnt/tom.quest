@@ -1,13 +1,11 @@
 import { convexTest } from "convex-test";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { internal } from "./_generated/api";
 import schema from "./schema";
-import { MESSAGE_MAX_CHARS } from "./ttsCompose";
 
 // Standing rulings (convex/jarvis/rulings.ts): the write door that checks his
 // sentence against the thread message it cites, the ask reader that hands an
 // asker the rulings standing in its scopes, and the new-information door that
-// ends one and puts it on the next digest.
+// ends one and writes the line that says why on its row.
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -304,7 +302,7 @@ describe("the ask reader's standing rulings", () => {
 });
 
 describe("POST /jarvis/standing-ruling/new-information", () => {
-  it("a later sentence in the same scope supersedes the earlier ruling, which leaves the reader and carries the digest's line", async () => {
+  it("a later sentence in the same scope supersedes the earlier ruling, which leaves the reader and carries the line that says why", async () => {
     const t = convexTest({ schema, modules });
     vi.stubEnv("JARVIS_KEY", "k");
     const earlier = await rule(t, "repo:Jarvis", "land it", { session: "a" });
@@ -315,8 +313,6 @@ describe("POST /jarvis/standing-ruling/new-information", () => {
     const ended = (await eventRow(t, earlier))?.data as { supersededAt: number; supersededLine: string };
     expect(ended).toMatchObject({ standing: false, supersededBy: later, sentence: "land it", supersededAt: expect.any(Number) });
     expect((await standing(t, ["repo:Jarvis"])).map((one) => one.id)).toEqual([later]);
-    // No digest-line row: the digest reads the ruling row itself.
-    expect(await t.run(async (ctx) => ctx.db.query("events").withIndex("by_kind_at", (q) => q.eq("kind", "digest-line")).collect())).toEqual([]);
     expect(ended.supersededLine).toMatch(
       /^Your ruling of \d{4}-\d{2}-\d{2} in scope repo:Jarvis no longer stands, because a later sentence of yours in the same scope replaced it: "wait for me"; it said "land it"\.$/,
     );
@@ -399,151 +395,5 @@ describe("POST /jarvis/standing-ruling/new-information", () => {
     const res = await post(t, "/jarvis/standing-ruling/new-information", { rulingId: "nope", type: "sentence", id: later });
     expect(res.status).toBe(400);
     expect((await res.json()).error).toBe("no ruling nope in the record");
-  });
-});
-
-describe("the digest's superseded rulings", () => {
-  const SINCE = Date.UTC(2026, 9, 4, 9);
-  const NOW = Date.UTC(2026, 9, 5, 9, 30);
-  const DAY = "2026-10-05";
-
-  /** A ruling ended at `at`, as supersede leaves its row. */
-  const ended = (n: number, at: number, line = `Your ruling ${n} in scope part:p${n} no longer stands, because a later sentence of yours replaced it.`) => ({
-    kind: "ruling",
-    at: at - 60_000,
-    provenance: {},
-    subject: `part:p${n}`,
-    data: {
-      id: `ruling:${n.toString(16).padStart(64, "0")}`,
-      sentence: `sentence ${n}`,
-      scope: `part:p${n}`,
-      question: "q",
-      provenance: { session: "a" },
-      standing: false,
-      supersededBy: "k17later",
-      supersededAt: at,
-      supersededLine: line,
-    },
-  });
-
-  const compose = (t: T, now: number, since: number) =>
-    t.query(internal.ttsDigest.internalComposeToday, { day: DAY, now, since });
-
-  /** A digest's row as its writer leaves it, carrying the cursor. */
-  const digestRow = (kind: "thread-digest" | "digest-sent", at: number, cursor: { at: number; after: number }) => ({
-    kind,
-    at,
-    provenance: {},
-    subject: `day-${at}`,
-    data: { day: `day-${at}`, windowEnd: at, supersededCursor: cursor },
-  });
-
-  it("lists an older supersession behind 200 newer digest lines", async () => {
-    const t = convexTest({ schema, modules });
-    const ruling = await t.run(async (ctx) => {
-      const id = await ctx.db.insert("events", ended(1, SINCE + 1_000));
-      for (let n = 0; n < 200; n += 1) {
-        await ctx.db.insert("events", {
-          kind: "digest-line",
-          at: SINCE + 2_000 + n,
-          provenance: {},
-          subject: `a${n}`,
-          data: { section: "decisions", askId: `a${n}`, decision: `decision ${n}` },
-        });
-      }
-      return id;
-    });
-    const out = await compose(t, NOW, SINCE);
-    expect(out.text).toContain("Your ruling 1 in scope part:p1 no longer stands");
-    const created = (await t.run(async (ctx) => ctx.db.get(ruling)))?._creationTime;
-    expect(out.supersededCursor).toEqual({ at: SINCE + 1_000, after: created });
-  });
-
-  it("prints as many supersessions as fit, carries the rest, and the next digests print them in order", async () => {
-    const t = convexTest({ schema, modules });
-    const long = (n: number) =>
-      `Your ruling ${n} in scope part:p${n} no longer stands, because a later sentence of yours in the same scope replaced it.`;
-    await t.run(async (ctx) => {
-      for (let n = 0; n < 40; n += 1) await ctx.db.insert("events", ended(n, SINCE + 1_000 + n, long(n)));
-    });
-    const printedIn = (text: string) =>
-      Array.from({ length: 40 }, (_, n) => n).filter((n) => text.includes(`Your ruling ${n} in scope part:p${n} `));
-
-    const seen: number[] = [];
-    let since = SINCE;
-    let now = NOW;
-    let digests = 0;
-    for (let digest = 0; digest < 5 && seen.length < 40; digest += 1) {
-      digests += 1;
-      const out = await compose(t, now, since);
-      expect(out.text.length).toBeLessThanOrEqual(MESSAGE_MAX_CHARS);
-      const printed = printedIn(out.text);
-      expect(printed.length).toBeGreaterThan(0);
-      // Each digest prints the oldest ones not yet printed, in order.
-      expect(printed).toEqual(Array.from({ length: printed.length }, (_, i) => seen.length + i));
-      seen.push(...printed);
-      // Only a thread-digest row carries the cursor, as the record's cron
-      // writes it; the next digest reads it back and starts past it.
-      await t.run(async (ctx) => {
-        await ctx.db.insert("events", digestRow("thread-digest", now, out.supersededCursor));
-      });
-      since = now;
-      now += 86_400_000;
-    }
-    expect(seen).toEqual(Array.from({ length: 40 }, (_, n) => n));
-    // The forty did not fit one message, so some were carried.
-    expect(digests).toBeGreaterThan(1);
-  });
-
-  it("starts from the further along of the newest digest-sent and thread-digest cursors", async () => {
-    const t = convexTest({ schema, modules });
-    const ids = await t.run(async (ctx) => {
-      const out: string[] = [];
-      for (let n = 0; n < 6; n += 1) out.push(await ctx.db.insert("events", ended(n, SINCE + 1_000 + n)));
-      return out;
-    });
-    const created = async (n: number) => (await t.run(async (ctx) => ctx.db.get(ids[n] as never)))?._creationTime as number;
-    const printed = (text: string) => Array.from({ length: 6 }, (_, n) => n).filter((n) => text.includes(`Your ruling ${n} in scope part:p${n} `));
-    // The Slack row's cursor is past ruling 3, the thread row's past ruling 1.
-    await t.run(async (ctx) => {
-      await ctx.db.insert("events", digestRow("digest-sent", SINCE + 5_000, { at: SINCE + 1_003, after: 0 }));
-      await ctx.db.insert("events", digestRow("thread-digest", SINCE + 6_000, { at: SINCE + 1_001, after: 0 }));
-    });
-    expect(printed((await compose(t, NOW, SINCE)).text)).toEqual([3, 4, 5]);
-    // The other way round: the thread row's cursor is the further one.
-    const past4 = { at: SINCE + 1_004, after: await created(4) };
-    await t.run(async (ctx) => {
-      await ctx.db.insert("events", digestRow("thread-digest", SINCE + 7_000, past4));
-    });
-    expect(printed((await compose(t, NOW, SINCE)).text)).toEqual([5]);
-  });
-
-  it("the record's thread digest records the cursor on its row and prints the carried rulings the next morning", async () => {
-    vi.useFakeTimers();
-    // 10:30 UTC is 06:30 New York: the digest is due.
-    const first = Date.UTC(2026, 9, 5, 10, 30);
-    vi.setSystemTime(first);
-    const t = convexTest({ schema, modules });
-    const long = (n: number) =>
-      `Your ruling ${n} in scope part:p${n} no longer stands, because a later sentence of yours in the same scope replaced it.`;
-    await t.run(async (ctx) => {
-      for (let n = 0; n < 40; n += 1) await ctx.db.insert("events", ended(n, first - 3_600_000 + n, long(n)));
-    });
-    const seen: number[] = [];
-    let mornings = 0;
-    for (let day = 0; day < 5 && seen.length < 40; day += 1) {
-      mornings += 1;
-      vi.setSystemTime(first + day * 86_400_000);
-      expect(await t.mutation(internal.jarvis.digest.appendThreadDigest, {})).toMatchObject({ appended: true });
-      const row = await t.run(async (ctx) =>
-        ctx.db.query("events").withIndex("by_kind_at", (q) => q.eq("kind", "thread-digest")).order("desc").first(),
-      );
-      const text = row?.text ?? "";
-      expect(text.length).toBeLessThanOrEqual(MESSAGE_MAX_CHARS);
-      expect((row?.data as { supersededCursor?: unknown }).supersededCursor).toEqual({ at: expect.any(Number), after: expect.any(Number) });
-      seen.push(...Array.from({ length: 40 }, (_, n) => n).filter((n) => text.includes(`Your ruling ${n} in scope part:p${n} `)));
-    }
-    expect(seen).toEqual(Array.from({ length: 40 }, (_, n) => n));
-    expect(mornings).toBeGreaterThan(1);
   });
 });

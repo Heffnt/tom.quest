@@ -13,8 +13,6 @@ import { internal } from "./_generated/api";
 import schema from "./schema";
 import { firstParentLine } from "./gateLandings";
 import { AUDIT_VERDICT, LANDING_JOB, MERGE, NIGHTLY_RUN, TESTS_RUN, commitKey, landingKey, mergeKey } from "./ttsMerge";
-import { gatherTodayFacts } from "./ttsDigest";
-import { DAY_MS, nyCalendarDayKey } from "./ttsShared";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -401,79 +399,5 @@ describe("what arrived on main", () => {
     gh.asked.length = 0;
     await refresh(t);
     expect(gh.asked).toContain(compared(SLUG, sha("b")));
-  });
-});
-
-describe("the digest", () => {
-  it("leaves out a backfilled landing older than a day, even when the window is longer", async () => {
-    const t = convexTest({ schema, modules });
-    const now = Date.now();
-    const old = sha("a");
-    const recent = sha("b");
-    // Two rows as the one-time backfill (tom.quest #342) wrote them: dated
-    // when the pull request landed, and marked backfilled.
-    await t.run(async (ctx) => {
-      for (const [head, subject, at] of [
-        [old, "landed three days ago", now - 3 * DAY_MS],
-        [recent, "landed two hours ago", now - 2 * 60 * 60 * 1000],
-      ] as const) {
-        await ctx.db.insert("dtsEvents", {
-          at,
-          kind: MERGE,
-          key: mergeKey(REPO, head),
-          data: { repo: REPO, sha: head, subject, mainCheck: "checked", reason: "", backfilled: true },
-        });
-      }
-      // A landing of the same age that the refresh or POST /tts/merge wrote
-      // at the time stays in a window that covers it.
-      await ctx.db.insert("dtsEvents", {
-        at: now - 3 * DAY_MS,
-        kind: MERGE,
-        key: mergeKey(REPO, sha("c")),
-        data: { repo: REPO, sha: sha("c"), subject: "recorded three days ago", mainCheck: "checked", reason: "" },
-      });
-    });
-    const decisions = await t.run(async (ctx) =>
-      (await gatherTodayFacts(ctx, { day: nyCalendarDayKey(now), now: now + 1, since: now - 5 * DAY_MS })).objections.map(
-        (o) => o.decision,
-      ),
-    );
-    expect(decisions.filter((line) => line.startsWith("merged"))).toEqual([
-      "merged Jarvis@bbbbbbb: landed two hours ago",
-      "merged Jarvis@ccccccc: recorded three days ago",
-    ]);
-  });
-
-  it("shows a landing past the gate once among what is broken, and says when the gate passed it", async () => {
-    const t = await started();
-    const head = sha("a");
-    arrive(commit(sha("b"), [BASE]));
-    gh.state.closed.set(SLUG, [landed(46, head, sha("b"))]);
-    await refresh(t);
-    // A second refresh files it again; the standing report is not a second line.
-    gh.state.history.set(SLUG, [commit(BASE, []), commit(sha("b"), [BASE])]);
-    await t.mutation(internal.gateLandings.internalSetMainSeen, { repo: REPO, sha: BASE });
-    await refresh(t);
-    const broken = async () =>
-      await t.run(async (ctx) => {
-        const now = Date.now() + 1;
-        return (await gatherTodayFacts(ctx, { day: nyCalendarDayKey(now), now, since: now - DAY_MS })).broken;
-      });
-    const lines = (await broken()).filter((line) => line.statement.includes("merge gate"));
-    expect(lines).toHaveLength(1);
-    expect(lines[0].statement).toBe("A change reached main without passing the merge gate.");
-    expect(lines[0].detail).toContain("Jarvis pull request #46 landed on main as bbbbbbb");
-
-    // The rows arrive late, through their writers: the gate opens.
-    await t.mutation(internal.ttsMerge.internalRecordTests, { repo: REPO, sha: head, ok: true });
-    await t.mutation(internal.ttsMerge.internalRecordAudit, {
-      repo: REPO,
-      sha: head,
-      verdict: "APPROVED",
-      text: "VERDICT: APPROVED\nIt does what it says.",
-    });
-    const after = (await broken()).filter((line) => line.statement.includes("merge gate"));
-    expect(after).toHaveLength(1);
-    expect(after[0].statement).toMatch(/^A change reached main without passing the merge gate\. The merge gate has passed it since /);
   });
 });

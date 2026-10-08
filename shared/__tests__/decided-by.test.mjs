@@ -1,37 +1,7 @@
-// Who decided, and the option an answer of Tom's names (shared/decided-by.mjs):
-// the record's check of a decision by Tom and the box's mapping of his reply
-// read this one function, so they cannot disagree on what a reply names.
+// Who decided (shared/decided-by.mjs).
 
 import { describe, expect, it } from "vitest";
-import { askShown, decidedByText, decisionOfAnswer, optionNamed } from "../decided-by.mjs";
-
-const OPTIONS = ["Move it to Thursday morning.", "Leave it Wednesday."];
-
-describe("optionNamed", () => {
-  it("reads a letter in the forms a reply takes", () => {
-    for (const said of ["b", "B", "b)", "(b)", "b.", "option b", " b "]) {
-      expect(optionNamed(said, OPTIONS)).toBe("Leave it Wednesday.");
-    }
-    expect(optionNamed("c", OPTIONS)).toBeNull();
-  });
-
-  it("reads an option's own words, case and a closing stop aside", () => {
-    expect(optionNamed("leave it wednesday", OPTIONS)).toBe("Leave it Wednesday.");
-    expect(optionNamed("Move it to Thursday morning!", OPTIONS)).toBe("Move it to Thursday morning.");
-    expect(optionNamed("Ask the consulate first.", OPTIONS)).toBeNull();
-  });
-
-  it("makes his own words the decision when they name no option", () => {
-    expect(decisionOfAnswer("a", OPTIONS)).toBe("Move it to Thursday morning.");
-    expect(decisionOfAnswer("  Ask the consulate first. ", OPTIONS)).toBe("Ask the consulate first.");
-  });
-});
-
-describe("askShown", () => {
-  it("letters the options in order after the question", () => {
-    expect(askShown(" Move it? ", OPTIONS)).toBe("Move it? Options: a) Move it to Thursday morning; b) Leave it Wednesday.");
-  });
-});
+import { decidedByText } from "../decided-by.mjs";
 
 describe("decidedByText", () => {
   it("names Tom, or the delegate after its wait, in whole minutes", () => {

@@ -11,7 +11,6 @@ import { requireTom } from "./authRoles";
 import { applyStatusChange, logEvent } from "./tts";
 import { DAY_MS, SESSION_OUTCOME, buildDoneSet, isChangeSubject, isReadyForTom, rulingAnswers } from "./ttsShared";
 import { eitherId, resolveId, todoReader, todoRulings, withPlainTodoIds } from "./jarvis/tables";
-import { listForDigest } from "./jarvis/outbox";
 
 // Tom's rulings, unified over life and code todos (ratified 2026-08-28).
 // A ruling = subject + verdict + optional sentence + timestamp. The closed
@@ -243,40 +242,7 @@ export async function insertRuling(
     await ctx.scheduler.runAfter(0, internal.agentLabels.internalLabelFromRuling, {
       rulingId: id,
     });
-    // A RULING READ OUT OF HIS SENTENCE IS A DECISION TAKEN IN HIS NAME, so it
-    // goes on the digest's objection list (convex/jarvis/outbox.ts), where
-    // "revert <n>" reaches it. Only the words door — a ruling he pressed a
-    // button for is not a decision anyone took for him.
-    if (provenance !== undefined) {
-      await listForDigest(ctx, {
-        section: "decisions",
-        askId: `ruling:${id}`,
-        ...(todoId === undefined ? {} : { todoId }),
-        decision: `${await ruledSubjectName(ctx, { todoId, repo, externalId })} was ruled a ${verdict} from your own words`,
-        ...(trimmed ? { reason: trimmed } : {}),
-      });
-    }
     return id;
-}
-
-/** What a decision line calls the thing that was ruled on: the todo's own
- *  statement, or the code todo's repo and id. Never an id on its
- *  own — an id in a message is a word Tom has to translate. */
-async function ruledSubjectName(
-  ctx: MutationCtx,
-  subject: {
-    todoId?: Id<"todos">;
-    repo?: string;
-    externalId?: string;
-  },
-): Promise<string> {
-  if (subject.todoId !== undefined) {
-    return (await todoReader(ctx)(subject.todoId))?.statement ?? "an item";
-  }
-  if (subject.repo !== undefined && subject.externalId !== undefined) {
-    return `${subject.repo} ${subject.externalId}`;
-  }
-  return "the agent";
 }
 
 export const recordRuling = mutation({
@@ -331,15 +297,11 @@ export const internalRecordRuling = internalMutation({
 // language in a session turn; the agent that read the turn decides it IS a
 // ruling and calls the route with the turn's claudeInbound id, the verdict,
 // the subject, and Tom's sentence verbatim. Ambiguity is the agent's problem,
-// never the server's: the server checks provenance, not meaning, and the
-// digest quotes every ruling written this way so a misreading is objected.
+// never the server's: the server checks provenance, not meaning.
 //
 // The checks, in order, each a refusal with its reason in the error:
-//   1. the id names a claudeInbound user-turn — one lookup for every path a
-//      turn arrives by, because a threaded Slack reply the events route
-//      matched to TOM_SLACK_USER_ID is written as a claudeInbound row with
-//      author "tom" (ttsSlack.sessionReply), not stored apart; an id that is
-//      not an inbound row is refused as unknown;
+//   1. the id names a claudeInbound user-turn — an id that is not an inbound
+//      row is refused as unknown;
 //   2. the row's author is "tom" — an agent-authored row (the CLI pen, the
 //      code-built opener) and a row that predates the author field are refused;
 //   3. the sentence is ONE WHOLE UNIT of the row's text (turnSpans below) of
@@ -472,9 +434,7 @@ async function resolveSubject(
 // named, as recorded on the claudeSessions row — its todo; or, for a block
 // session, the todos of its
 // category (the "code" block names its code subjects). An adhoc session names
-// nothing, so none of its turns can rule. A
-// Slack reply reaches this door as a turn of the same session
-// (ttsSlack.sessionReply), so it is bound the same way. The refusal is its
+// nothing, so none of its turns can rule. The refusal is its
 // own reason, distinct from "unknown subject": the subject exists, Tom was
 // just not talking about it in that session.
 //
@@ -624,7 +584,7 @@ export const internalRecordRulingFromTomWords = internalMutation({
     }
     // 8. the ruling, through the one apply path. No unarchiveCondition: an
     // archive from this door leaves the return condition unset (the quote is
-    // in provenance and the digest), it never becomes what the page shows.
+    // in provenance), it never becomes what the page shows.
     return await insertRuling(ctx, {
       ...subject,
       verdict,

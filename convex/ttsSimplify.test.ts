@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 import schema from "./schema";
 import { internal } from "./_generated/api";
 import { DELEGATE_OBJECTION } from "./ttsAsk";
-import { DIGEST_SENT } from "./ttsDigest";
 import { EVALS_RUN } from "./ttsEvals";
 import { AUDIT_VERDICT, TESTS_RUN, commitKey } from "./ttsMerge";
 import {
@@ -111,11 +110,6 @@ async function seedEvent(
   key?: string,
 ) {
   await t.run(async (ctx) => {
-    // The digest's rows live in the record's events table (convex/jarvis/digest.ts).
-    if (kind === DIGEST_SENT) {
-      await ctx.db.insert("events", { at, kind, provenance: {}, data: data ?? {} });
-      return;
-    }
     await ctx.db.insert("dtsEvents", { at, kind, ...(key === undefined ? {} : { key }), data });
   });
 }
@@ -294,24 +288,16 @@ async function seedProposal(
   );
 }
 
-describe("internalOpenProposals — the 24-hour floor and the digest", () => {
-  it("is NOT open with no digest after it", async () => {
+describe("internalOpenProposals — the 24-hour floor", () => {
+  it("opens after the floor", async () => {
     const t = convex();
     await seedProposal(t, "simplify:1", 3 * DAY);
-    expect(await openProposals(t)).toEqual([]);
+    expect(await openProposals(t)).toHaveLength(1);
   });
 
-  it("is NOT open when the only digest went out 20 hours after it", async () => {
+  it("opens after more than 24 hours", async () => {
     const t = convex();
     await seedProposal(t, "simplify:1", 3 * DAY);
-    await seedEvent(t, DIGEST_SENT, NOW - 3 * DAY + 20 * HOUR, { day: "2027-01-15" });
-    expect(await openProposals(t)).toEqual([]);
-  });
-
-  it("IS open when a digest went out 30 hours after it", async () => {
-    const t = convex();
-    await seedProposal(t, "simplify:1", 3 * DAY);
-    await seedEvent(t, DIGEST_SENT, NOW - 3 * DAY + 30 * HOUR, { day: "2027-01-16" });
     const open = await openProposals(t);
     expect(open).toHaveLength(1);
     expect(open[0]).toMatchObject({
@@ -320,14 +306,12 @@ describe("internalOpenProposals — the 24-hour floor and the digest", () => {
       sentence: "the know layer's third file is never read",
       at: NOW - 3 * DAY,
     });
-    // The floor is exactly a day.
-    expect(NOW - 3 * DAY + 30 * HOUR).toBeGreaterThan(NOW - 3 * DAY + OBJECTION_FLOOR_MS);
+    expect(NOW).toBeGreaterThan(NOW - 3 * DAY + OBJECTION_FLOOR_MS);
   });
 
-  it("is NEVER open once Tom objected, however long the digest has been printing it", async () => {
+  it("is never open once Tom objected", async () => {
     const t = convex();
     await seedProposal(t, "simplify:1", 5 * DAY);
-    await seedEvent(t, DIGEST_SENT, NOW - 3 * DAY, { day: "2027-01-16" });
     await seedEvent(t, DELEGATE_OBJECTION, NOW - 2 * DAY, { text: "no" }, "simplify:1");
     expect(await openProposals(t)).toEqual([]);
   });
@@ -335,22 +319,19 @@ describe("internalOpenProposals — the 24-hour floor and the digest", () => {
   it("is NOT open once it has been admitted — admitting it twice is two todos", async () => {
     const t = convex();
     await seedProposal(t, "simplify:1", 5 * DAY);
-    await seedEvent(t, DIGEST_SENT, NOW - 3 * DAY, { day: "2027-01-16" });
     await seedEvent(t, SIMPLIFY_ADMITTED, NOW - 2 * DAY, { rowId: "row-simplify:1" }, "simplify:1");
     expect(await openProposals(t)).toEqual([]);
   });
 
-  it("is never open on a DRY RUN, whatever the digest did", async () => {
+  it("is never open on a dry run", async () => {
     const t = convex();
     await seedProposal(t, "simplify:1", 5 * DAY, { dryRun: true });
-    await seedEvent(t, DIGEST_SENT, NOW - 3 * DAY, { day: "2027-01-16" });
     expect(await openProposals(t)).toEqual([]);
   });
 
   it("is never open when it NEEDS HIS WORDS — it parks until he rules", async () => {
     const t = convex();
     await seedProposal(t, "simplify:1", 5 * DAY, { needsHisWords: true });
-    await seedEvent(t, DIGEST_SENT, NOW - 3 * DAY, { day: "2027-01-16" });
     expect(await openProposals(t)).toEqual([]);
   });
 
@@ -358,7 +339,6 @@ describe("internalOpenProposals — the 24-hour floor and the digest", () => {
     const t = convex();
     await seedProposal(t, "simplify:new", 3 * DAY);
     await seedProposal(t, "simplify:old", 6 * DAY);
-    await seedEvent(t, DIGEST_SENT, NOW - HOUR, { day: "2027-01-18" });
     expect((await openProposals(t)).map((p) => p.askId)).toEqual(["simplify:old", "simplify:new"]);
   });
 });
@@ -423,20 +403,16 @@ async function seedRemoval(t: TestConvex<typeof schema>, pr: number, ago: number
   );
 }
 
-describe("internalOpenRemovals — a day, a digest, and his words", () => {
-  it("is not closed with no digest after the floor, and closed with one", async () => {
+describe("internalOpenRemovals — a day and his words", () => {
+  it("closes after the floor without an objection", async () => {
     const t = convex();
     await seedRemoval(t, 7, 3 * DAY);
-    await seedEvent(t, DIGEST_SENT, NOW - 3 * DAY + 20 * HOUR, { day: "2027-01-15" });
-    expect((await openRemovals(t))[0]).toMatchObject({ askId: "loop:7", pr: 7, windowClosed: false, objection: null });
-    await seedEvent(t, DIGEST_SENT, NOW - 3 * DAY + 30 * HOUR, { day: "2027-01-16" });
     expect((await openRemovals(t))[0]).toMatchObject({ windowClosed: true, objection: null });
   });
 
   it("returns his words, and never closes the window, once he replied", async () => {
     const t = convex();
     await seedRemoval(t, 7, 5 * DAY);
-    await seedEvent(t, DIGEST_SENT, NOW - 3 * DAY, { day: "2027-01-16" });
     await seedEvent(t, DELEGATE_OBJECTION, NOW - 2 * DAY, { text: "keep the export, delete the caller", revert: false }, "loop:7");
     const [row] = await openRemovals(t);
     expect(row.windowClosed).toBe(false);
@@ -448,12 +424,8 @@ describe("internalOpenRemovals — a day, a digest, and his words", () => {
     await seedRemoval(t, 7, 5 * DAY);
     await seedEvent(t, DELEGATE_OBJECTION, NOW - 4 * DAY, { text: "not like that", revert: false }, "loop:7");
     await seedRemoval(t, 7, 3 * DAY, { round: 1 });
-    await seedEvent(t, DIGEST_SENT, NOW - 3 * DAY + 20 * HOUR, { day: "2027-01-15" });
-    let [row] = await openRemovals(t);
-    expect(row).toMatchObject({ round: 1, at: NOW - 3 * DAY, objection: null, windowClosed: false });
-    await seedEvent(t, DIGEST_SENT, NOW - HOUR, { day: "2027-01-18" });
-    [row] = await openRemovals(t);
-    expect(row.windowClosed).toBe(true);
+    const [row] = await openRemovals(t);
+    expect(row).toMatchObject({ round: 1, at: NOW - 3 * DAY, objection: null, windowClosed: true });
   });
 
   it("carries a revert as a revert", async () => {
@@ -466,7 +438,6 @@ describe("internalOpenRemovals — a day, a digest, and his words", () => {
   it("never returns a dry run", async () => {
     const t = convex();
     await seedRemoval(t, 9, 3 * DAY, { dryRun: true });
-    await seedEvent(t, DIGEST_SENT, NOW - HOUR, { day: "2027-01-18" });
     expect(await openRemovals(t)).toEqual([]);
   });
 });
@@ -489,4 +460,3 @@ describe("an objection to a loop pull request", () => {
     expect((await openRemovals(t, Date.now() + HOUR))[0].objection).toMatchObject({ text: "keep it, a test reads it", revert: false });
   });
 });
-

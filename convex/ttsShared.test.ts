@@ -1,29 +1,10 @@
-import { afterEach, describe, expect, expectTypeOf, it, vi } from "vitest";
+import { describe, expectTypeOf, it } from "vitest";
 import {
-  outputChannel,
   type ModelFamily,
   type NarrowListItem,
   type SessionModel,
   SESSION_REPOS,
 } from "./ttsShared";
-
-// ── The one output channel ───────────────────────────────────────────────────
-// Its own variable first, then the room's older one; nothing when neither.
-describe("outputChannel", () => {
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
-
-  it("answers the output channel's variable, then the older one, then nothing", () => {
-    vi.stubEnv("SLACK_TTS_TODAY_CHANNEL_ID", "C0TODAY");
-    vi.stubEnv("SLACK_TTS_CHANNEL_ID", "C0TTS");
-    expect(outputChannel()).toBe("C0TODAY");
-    vi.stubEnv("SLACK_TTS_TODAY_CHANNEL_ID", "");
-    expect(outputChannel()).toBe("C0TTS");
-    vi.stubEnv("SLACK_TTS_CHANNEL_ID", "");
-    expect(outputChannel()).toBeNull();
-  });
-});
 
 // ── The session constants keep their literal types ──────────────────────────
 // Their one home is shared/session-constants.mjs, plain ESM whose tables carry

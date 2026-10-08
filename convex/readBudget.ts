@@ -1,5 +1,7 @@
 import { getDocumentSize, type Value } from "convex/values";
-import type { ReadCut } from "./ttsCompose";
+
+/** A bounded read that stopped before it could return every row. */
+export type ReadCut = { what: string; read: number; skipped: number; by: "bytes" | "rows" };
 
 // ── Reads bounded by bytes ───────────────────────────────────────────────────
 // One Convex function, with everything it runs in its transaction, may read
@@ -14,12 +16,14 @@ import type { ReadCut } from "./ttsCompose";
 // at once could each cross it.
 
 export const MIB = 1024 * 1024;
-/** What one function's transaction may read (Convex's limit). */
-export const CONVEX_READ_LIMIT = 16 * MIB;
-/** The largest document Convex stores: what one budget can overshoot by. */
-export const MAX_DOCUMENT_BYTES = MIB;
 
-export type { ReadCut };
+export function readCutLine(cut: ReadCut): string {
+  const what = `${cut.what.charAt(0).toUpperCase()}${cut.what.slice(1)}: ${cut.read.toLocaleString("en-US")} read`;
+  if (cut.by === "rows") return `${what}, stopped at the row limit.`;
+  return cut.skipped > 0
+    ? `${what}, stopped at the byte budget, ${cut.skipped.toLocaleString("en-US")} left unread.`
+    : `${what}, stopped at the byte budget.`;
+}
 
 type Part = { what: string; rows: number; skipped: number; by: ReadCut["by"] | null };
 
@@ -94,7 +98,7 @@ export class ReadBudget {
 /**
  * A query's rows in its order: at most `rows`, and none read once `budget`
  * is spent. A read that ends with rows possibly left is recorded on the
- * budget, which the digest's cut run says. At the row cap one more row is
+ * budget, which the caller reports. At the row cap one more row is
  * read, and counted, to learn whether the cap cut anything; at the byte
  * budget whether rows were left is unknown, because knowing would mean
  * reading them.

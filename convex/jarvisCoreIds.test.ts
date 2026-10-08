@@ -3,7 +3,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { resolveId, todoEvents, todoRulings } from "./jarvis/tables";
-import { newestTodoEvents, todoHasEventSince, withPlainTodoIds } from "./jarvis/tables";
+import { newestTodoEvents, withPlainTodoIds } from "./jarvis/tables";
 import { logEvent } from "./tts";
 import { insertCopied } from "../test/core-tables";
 
@@ -171,42 +171,5 @@ describe("the newest events on a todo", () => {
     });
     const context = await t.query(internal.ttsAsk.internalAskContext, { todoId: old.todo });
     expect(context.priorObjections.map((o) => o.askId)).toEqual(["a1"]);
-  });
-});
-
-describe("an event of one kind on a todo since a time", () => {
-  it("is found under either id through by_todo_kind, from the time on, and no other kind counts", async () => {
-    const t = convexTest({ schema, modules });
-    const { old, plain } = await seed(t);
-    await t.run(async (ctx) => {
-      for (let i = 0; i < 500; i++) await ctx.db.insert("dtsEvents", { at: 2_000 + i, kind: "surfaced", todoId: old.todo });
-      await ctx.db.insert("dtsEvents", { at: 1_000, kind: "slack-event", todoId: old.todo });
-      for (const id of [old.todo, plain.todo]) {
-        expect(await todoHasEventSince(ctx, id, "slack-event", 1_000)).toBe(true);
-        expect(await todoHasEventSince(ctx, id, "slack-event", 1_001)).toBe(false);
-        expect(await todoHasEventSince(ctx, id, "surfaced", 2_499)).toBe(true);
-      }
-      await ctx.db.insert("dtsEvents", { at: 3_000, kind: "slack-event", todoId: plain.todo });
-      expect(await todoHasEventSince(ctx, old.todo, "slack-event", 1_001)).toBe(true);
-      const direct = await ctx.db
-        .query("dtsEvents")
-        .withIndex("by_todo_kind", (q) => q.eq("todoId", plain.todo).eq("kind", "slack-event").gte("at", 1_001))
-        .collect();
-      expect(direct.map((e) => e.at)).toEqual([3_000]);
-    });
-  });
-});
-
-describe("a Slack send on a todo named by either id", () => {
-  it("stamps the reply on the plain row and leaves the old row as it was", async () => {
-    for (const form of ["old", "plain"] as const) {
-      const t = convexTest({ schema, modules });
-      const { old, plain } = await seed(t);
-      await t.mutation(internal.ttsSlack.internalRecordSlackSent, { channel: "C-dump", ts: "9000.1", subject: { kind: "todo", id: form === "old" ? old.todo : plain.todo }, text: "captured" });
-      await t.run(async (ctx) => {
-        expect(await ctx.db.get(plain.todo)).toMatchObject({ slackReplyTs: "9000.1" });
-        expect(await ctx.db.get(old.todo)).not.toHaveProperty("slackReplyTs");
-      });
-    }
   });
 });

@@ -2,16 +2,11 @@ import { convexTest, type TestConvex } from "convex-test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { internal } from "./_generated/api";
 import schema from "./schema";
-import { gatherTodayFacts } from "./ttsDigest";
-import { nyCalendarDayKey } from "./ttsShared";
 import {
   CAP_REFUSAL,
   DELEGATE_DECISION,
   DELEGATE_MAX_PER_JOB,
   DELEGATE_MAX_PER_SESSION,
-  objectionRank,
-  stripNarrowListId,
-  type ObjectionFact,
 } from "./ttsAsk";
 import { insertTodo } from "../test/core-tables";
 
@@ -160,17 +155,11 @@ describe("POST /tts/ask — the delegate's record", () => {
     expect(written).toHaveLength(DELEGATE_MAX_PER_SESSION + 1);
     expect(written.find((row) => row.key === "aaaaaaaa")!.data.capped).toBeUndefined();
     // witness: the capped row kept the delegate's answer as if it were taken,
-    // so the digest listed it as a decision made in his name. The box took
-    // its fallback: the row reads as refused, the cap its reason, and the
-    // digest parks it rather than listing a decision.
+    // so it read as a decision made in his name. The box took its fallback:
+    // the row reads as refused, the cap its reason.
     const capped = written.find((row) => row.key === "aaaaaaaa")!;
     expect(capped.data).toMatchObject({ refused: true, refusedBecause: CAP_REFUSAL });
-    const facts = await t.run(async (ctx) => {
-      const now = Date.now() + 1;
-      return await gatherTodayFacts(ctx, { day: nyCalendarDayKey(now), now, since: now - 86_400_000 });
-    });
-    expect(facts.objections.find((o) => o.askId === "aaaaaaaa")).toMatchObject({ refused: true, refusedBecause: CAP_REFUSAL });
-    expect(facts.objections.find((o) => o.askId === "00000000")).toMatchObject({ refused: false });
+    expect(written.find((row) => row.key === "00000000")!.data).toMatchObject({ refused: false });
   });
 
   it("counts the cap per caller, so one session does not cap another", async () => {
@@ -476,6 +465,15 @@ describe("POST /tts/ask — the delegate's record", () => {
     expect(await objected("aaaa0002")).toBeNull();
   });
 
+  it("refuses a decision by Tom, a transport removed with needs-you", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convexTest({ schema, modules });
+    const response = await post(t, body({ job: "poll-gmail", decidedBy: "tom", needsTomId: "delegate-ask:3f9c1a22" }));
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toContain('decidedBy, when given, is "delegate"');
+    expect(await rows(t)).toEqual([]);
+  });
+
   it("refuses an unauthenticated caller", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convexTest({ schema, modules });
@@ -488,205 +486,6 @@ describe("POST /tts/ask — the delegate's record", () => {
   });
 });
 
-// The needs-you item a trade-off was shown to Tom as, as POST /tts/needs-tom
-// stores it (convex/ttsSlack.ts internalOpenNeedsTomThread): the question and
-// the options he read, which his reply's letter is read against.
-async function showItem(t: TestConvex<typeof schema>, key: string) {
-  await t.run(async (ctx) =>
-    ctx.db.insert("dtsEvents", {
-      at: Date.now(),
-      kind: "needs-tom",
-      key,
-      data: { key, reason: "It recommends a.", question: body().question, options: body().options },
-    }),
-  );
-}
-
-// A DECISION BY TOM: Jarvis `jarvis decide --trade-off` (Jarvis #262) held a
-// question for him on /thread, and his numbered reply is the decision. The
-// record writes it only when his own needs-tom-answered row backs it.
-describe("POST /tts/ask — a decision by Tom", () => {
-  // A delegate decision schedules its push (tom.quest #340); held timers keep
-  // it a scheduled row, never a send after the test's teardown.
-  beforeEach(() => vi.useFakeTimers());
-  afterEach(() => {
-    vi.useRealTimers();
-    vi.unstubAllEnvs();
-  });
-
-  const KEY_OF = "delegate-ask:3f9c1a22";
-  const decisionsOf = (t: TestConvex<typeof schema>) =>
-    t.run(async (ctx) => ctx.db.query("events").withIndex("by_kind_at", (q) => q.eq("kind", "decision")).collect());
-  // His reply as tom.quest #339 writes it: subject the item's key, his provenance.
-  const answer = (t: TestConvex<typeof schema>, said: string, over: Record<string, unknown> = {}) =>
-    t.run(async (ctx) =>
-      ctx.db.insert("events", {
-        kind: "needs-tom-answered",
-        at: Date.now(),
-        provenance: { user: "tom" },
-        subject: KEY_OF,
-        data: { answer: said, via: "thread" },
-        ...over,
-      }),
-    );
-  const byTom = (over: Record<string, unknown> = {}) =>
-    body({
-      job: "poll-gmail",
-      decision: "Leave it Wednesday and warn him it may be shut.",
-      reason: 'Tom answered on /thread: "b"',
-      model: "tom",
-      ms: 0,
-      promptSha: "tom-answer",
-      decidedBy: "tom",
-      needsTomId: KEY_OF,
-      waitedMs: 180_000,
-      waitNote: "Tom answered on /thread after 3 minutes",
-      ...over,
-    });
-
-  it("writes his answer as a decision row in his name, naming the reply that backs it", async () => {
-    vi.stubEnv("TTS_WORKER_KEY", KEY);
-    const t = convexTest({ schema, modules });
-    await showItem(t, KEY_OF);
-    const replyId = await answer(t, "b");
-    const response = await post(t, byTom());
-    expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ ok: true, attended: false, capped: false });
-    const [row, ...rest] = await decisionsOf(t);
-    expect(rest).toEqual([]);
-    expect(row).toMatchObject({
-      subject: "3f9c1a22",
-      provenance: { user: "tom" },
-      data: {
-        caller: "job:poll-gmail",
-        decision: "Leave it Wednesday and warn him it may be shut.",
-        decidedBy: "tom",
-        waitedMs: 180_000,
-        waitNote: "Tom answered on /thread after 3 minutes",
-        needsTomId: KEY_OF,
-        answerEventId: replyId,
-        refused: false,
-      },
-    });
-    // The ask row keeps the same facts, so a retry rebuilds the same row.
-    const [ask] = await rows(t);
-    expect(ask.data).toMatchObject({ decidedBy: "tom", waitedMs: 180_000, answerEventId: replyId, refused: false, attended: false });
-  });
-
-  it("takes his own words as the decision when they name no option", async () => {
-    vi.stubEnv("TTS_WORKER_KEY", KEY);
-    const t = convexTest({ schema, modules });
-    await showItem(t, KEY_OF);
-    await answer(t, "Ask the consulate first.");
-    expect((await post(t, byTom({ decision: "Ask the consulate first." }))).status).toBe(200);
-    expect((await decisionsOf(t))[0].data.decision).toBe("Ask the consulate first.");
-  });
-
-  it("refuses a decision by Tom that no answer of his backs, and writes nothing", async () => {
-    vi.stubEnv("TTS_WORKER_KEY", KEY);
-    const t = convexTest({ schema, modules });
-    await showItem(t, KEY_OF);
-    const refusal = async (payload: Record<string, unknown>) => {
-      const response = await post(t, payload);
-      expect(response.status).toBe(400);
-      return ((await response.json()) as { error: string }).error;
-    };
-    // No reply of his under the item.
-    expect(await refusal(byTom())).toContain("no answer of Tom's to delegate-ask:3f9c1a22");
-    // A reply under the item that was not written as his.
-    await answer(t, "b", { provenance: { job: "thread-reply" } });
-    expect(await refusal(byTom())).toContain("was not written as Tom's");
-    // His reply names option b; the body claims option a.
-    await answer(t, "b");
-    expect(await refusal(byTom({ decision: "Move it to Thursday morning." }))).toContain("is not what Tom's answer");
-    // His reply to another ask's item cannot back this one.
-    expect(await refusal(byTom({ needsTomId: "delegate-ask:0badc0de" }))).toContain("names this ask's needs-you item");
-    expect(await rows(t)).toEqual([]);
-    expect(await decisionsOf(t)).toEqual([]);
-    // The route's own shape checks.
-    expect(await refusal(byTom({ needsTomId: undefined }))).toContain("names needsTomId");
-    expect(await refusal(byTom({ refused: true, refusedBecause: "money — a payment" }))).toContain("refused false");
-    expect(await refusal(byTom({ decision: null }))).toContain("decision set");
-    expect(await refusal(body({ job: "poll-gmail", needsTomId: KEY_OF }))).toContain('only with decidedBy "tom"');
-    expect(await refusal(body({ job: "poll-gmail", decidedBy: "someone" }))).toContain('"delegate" or "tom"');
-    // Backed, the same body is written.
-    expect((await post(t, byTom())).status).toBe(200);
-    expect(await decisionsOf(t)).toHaveLength(1);
-  });
-
-  it("reads his letter against the question and options he was shown, not the caller's", async () => {
-    vi.stubEnv("TTS_WORKER_KEY", KEY);
-    const t = convexTest({ schema, modules });
-    const refusal = async (payload: Record<string, unknown>) => {
-      const response = await post(t, payload);
-      expect(response.status).toBe(400);
-      return ((await response.json()) as { error: string }).error;
-    };
-    await answer(t, "b");
-    // No question with options was stored on the item: his "b" names nothing.
-    expect(await refusal(byTom())).toContain("holds no question with options shown to Tom");
-    await showItem(t, KEY_OF);
-    // The same "b" against the options swapped: b is now "Move it to Thursday
-    // morning.", which he did not choose. Refused, and nothing is written.
-    const swapped = [...body().options].reverse();
-    expect(await refusal(byTom({ options: swapped, recommendation: swapped[0], decision: swapped[1] }))).toContain(
-      "the options are not the ones Tom was shown",
-    );
-    // A third option added, or the question changed, is refused the same way.
-    expect(await refusal(byTom({ options: [...body().options, "Cancel it."] }))).toContain("the options are not the ones Tom was shown");
-    expect(await refusal(byTom({ question: "Do I cancel the passport appointment?" }))).toContain("the question is not the one Tom was shown");
-    expect(await rows(t)).toEqual([]);
-    expect(await decisionsOf(t)).toEqual([]);
-    // The options he was shown: his "b" is option b.
-    expect((await post(t, byTom())).status).toBe(200);
-    expect((await decisionsOf(t))[0].data.decision).toBe("Leave it Wednesday and warn him it may be shut.");
-  });
-
-  it("sends no push for his own decision, while the delegate's decision beside it is pushed", async () => {
-    vi.stubEnv("TTS_WORKER_KEY", KEY);
-    const t = convexTest({ schema, modules });
-    await showItem(t, KEY_OF);
-    await answer(t, "b");
-    expect((await post(t, byTom())).status).toBe(200);
-    // A delegate decision for the same caller, so the read below is shown to
-    // see a push when one is scheduled (tom.quest #340).
-    expect((await post(t, body({ job: "poll-gmail", askId: "d0000001" }))).status).toBe(200);
-    const pushes = await t.run(async (ctx) =>
-      (await ctx.db.system.query("_scheduled_functions").collect())
-        .filter((job) => job.name.includes("pushSend"))
-        .map((job) => (job.args[0] as { url: string }).url),
-    );
-    expect(pushes).toEqual(["/tts"]);
-  });
-
-  it("passes neither the attended check nor the cap, and does not spend the caller's cap", async () => {
-    vi.stubEnv("TTS_WORKER_KEY", KEY);
-    const t = convexTest({ schema, modules });
-    await showItem(t, KEY_OF);
-    await answer(t, "b");
-    const attended = await seedSession(t);
-    const own = await post(t, byTom({ job: undefined, sessionId: attended }));
-    expect(await own.json()).toMatchObject({ attended: false, capped: false });
-    expect((await decisionsOf(t))[0].data.refused).toBe(false);
-    // Three decisions of his for poll-gmail leave its three delegate asks intact.
-    for (const askId of ["7a000001", "7a000002", "7a000003"]) {
-      await showItem(t, `delegate-ask:${askId}`);
-      await t.run(async (ctx) =>
-        ctx.db.insert("events", {
-          kind: "needs-tom-answered", at: Date.now(), provenance: { user: "tom" },
-          subject: `delegate-ask:${askId}`, data: { answer: "a", via: "thread" },
-        }),
-      );
-      const response = await post(t, byTom({ askId, needsTomId: `delegate-ask:${askId}`, decision: "Move it to Thursday morning." }));
-      expect(response.status).toBe(200);
-    }
-    for (const askId of ["7b000001", "7b000002", "7b000003"]) {
-      expect(await (await post(t, body({ job: "poll-gmail", askId }))).json()).toMatchObject({ capped: false });
-    }
-    expect(await (await post(t, body({ job: "poll-gmail", askId: "7b000004" }))).json()).toMatchObject({ capped: true });
-  });
-});
-
 describe("POST /tts/ask — the wait for Tom is stored", () => {
   // A delegate decision schedules its push (tom.quest #340); held timers keep
   // it a scheduled row, never a send after the test's teardown.
@@ -696,7 +495,7 @@ describe("POST /tts/ask — the wait for Tom is stored", () => {
     vi.unstubAllEnvs();
   });
 
-  it("keeps waitedMs and waitNote on the ask and the decision row, and the digest says who decided after how long", async () => {
+  it("keeps waitedMs and waitNote on the ask and the decision row, and refuses a negative wait", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convexTest({ schema, modules });
     const waited = await post(
@@ -714,31 +513,12 @@ describe("POST /tts/ask — the wait for Tom is stored", () => {
     expect((await rows(t))[0].data).toMatchObject({ waitedMs: 7_200_000 });
     // An ask that was not a trade-off records no wait, as before.
     await post(t, body({ job: "poll-canvas", askId: "c0ffee00" }));
-    await showItem(t, "delegate-ask:7e000001");
-    await t.run(async (ctx) =>
-      ctx.db.insert("events", {
-        kind: "needs-tom-answered", at: Date.now(), provenance: { user: "tom" },
-        subject: "delegate-ask:7e000001", data: { answer: "a", via: "thread" },
-      }),
+    const plain = await t.run(async (ctx) =>
+      ctx.db.query("events").withIndex("by_kind_subject_at", (q) => q.eq("kind", "decision").eq("subject", "c0ffee00")).first(),
     );
-    await post(t, body({
-      job: "poll-gmail", askId: "7e000001", decidedBy: "tom", needsTomId: "delegate-ask:7e000001",
-      model: "tom", promptSha: "tom-answer", ms: 0, waitedMs: 720_000,
-    }));
+    expect(plain!.data.waitedMs).toBeUndefined();
     // A negative wait is refused.
     expect((await post(t, body({ job: "poll-gmail", askId: "7e000002", waitedMs: -1 }))).status).toBe(400);
-
-    const facts = await t.run(async (ctx) => {
-      const now = Date.now() + 1;
-      return await gatherTodayFacts(ctx, { day: nyCalendarDayKey(now), now, since: now - 86_400_000 });
-    });
-    // One line per decision (#354), read from its decision row.
-    const of = (askId: string) => facts.objections.filter((o) => o.askId === askId);
-    expect(of("3f9c1a22")).toEqual([expect.objectContaining({ decidedByText: "decided by the delegate after waiting 120 minutes" })]);
-    expect(of("c0ffee00")).toHaveLength(1);
-    expect(of("c0ffee00")[0].decidedByText).toBeUndefined();
-    expect(of("7e000001")).toEqual([expect.objectContaining({ decidedByTom: true, decidedByText: "decided by Tom after 12 minutes" })]);
-    expect(facts.objectionTom).toBe(1);
   });
 });
 
@@ -767,71 +547,6 @@ describe("GET /tts/state serves the narrow list", () => {
       expect(item.decision).toBeTruthy();
       expect(item.command).toBeTruthy();
     }
-  });
-});
-
-describe("objectionRank", () => {
-  const fact = (over: Partial<ObjectionFact>): ObjectionFact => ({
-    askId: "a",
-    at: 0,
-    todoId: null,
-    decision: "took it",
-    reason: "because",
-    refused: false,
-    refusedBecause: null,
-    fallback: "the fallback",
-    subject: null,
-    objectedAt: null,
-    ...over,
-  });
-  const due = new Set(["due"]);
-  const ready = new Set(["ready"]);
-
-  it("puts a refusal on a dated item first, then any refusal, then silence", () => {
-    expect(objectionRank(fact({ refused: true, todoId: "due" }), ready, due)).toBe(0);
-    expect(objectionRank(fact({ refused: true, todoId: "ready" }), ready, due)).toBe(1);
-    expect(objectionRank(fact({ decision: null }), ready, due)).toBe(2);
-  });
-
-  it("then a decision on a dated item, a ready one, any todo, then the run itself", () => {
-    expect(objectionRank(fact({ todoId: "due" }), ready, due)).toBe(3);
-    expect(objectionRank(fact({ todoId: "ready" }), ready, due)).toBe(4);
-    expect(objectionRank(fact({ todoId: "other" }), ready, due)).toBe(5);
-    expect(objectionRank(fact({ todoId: null }), ready, due)).toBe(6);
-  });
-
-  it("orders a mixed list by tier, ties newest first", () => {
-    const items = [
-      fact({ askId: "plain", at: 10 }),
-      fact({ askId: "refused-due", at: 1, refused: true, todoId: "due" }),
-      fact({ askId: "silent-old", at: 1, decision: null }),
-      fact({ askId: "silent-new", at: 2, decision: null }),
-      fact({ askId: "refused", at: 9, refused: true }),
-    ];
-    const sorted = [...items].sort(
-      (a, b) => objectionRank(a, ready, due) - objectionRank(b, ready, due) || b.at - a.at,
-    );
-    expect(sorted.map((item) => item.askId)).toEqual([
-      "refused-due",
-      "refused",
-      "silent-new",
-      "silent-old",
-      "plain",
-    ]);
-  });
-});
-
-describe("stripNarrowListId", () => {
-  it("drops the id and keeps the sentence", () => {
-    expect(
-      stripNarrowListId("message-in-his-name — a message to another human in your name"),
-    ).toBe("a message to another human in your name");
-  });
-
-  it("is a no-op on a sentence carrying no id", () => {
-    expect(stripNarrowListId("  a message to another human  ")).toBe(
-      "a message to another human",
-    );
   });
 });
 

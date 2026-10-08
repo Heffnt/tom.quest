@@ -6,8 +6,6 @@ import {
   LEARNING_INPUT_MAX,
   LEARNING_REPLY_CHARS,
 } from "./ttsNightly";
-import { gatherTodayFacts } from "./ttsDigest";
-import { DAY_MS, nyCalendarDayKey } from "./ttsShared";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -48,34 +46,10 @@ describe("POST /tts/event", () => {
     expect(rows[0].at).toBeGreaterThan(0);
   });
 
-  it("puts a nightly failure in the digest's broken section, which comes through this door and not logEvent, and posts nothing", async () => {
-    vi.stubEnv("TTS_WORKER_KEY", KEY);
-    const t = convexTest({ schema, modules });
-    await post(t, "/tts/event", {
-      kind: "nightly-failure",
-      data: { step: "push", error: "rejected" },
-    });
-    // One output channel: nothing is scheduled for Slack. The digest reads the
-    // row itself (convex/ttsDigest.ts gatherTodayFacts, every failure kind).
-    const slack = await t.run(async (ctx) =>
-      (await ctx.db.system.query("_scheduled_functions").collect()).filter((job) => job.name.includes("ttsSync")),
-    );
-    expect(slack).toEqual([]);
-    const broken = await t.run(async (ctx) => {
-      const now = Date.now() + 1;
-      return (await gatherTodayFacts(ctx, { day: nyCalendarDayKey(now), now, since: now - DAY_MS })).broken;
-    });
-    expect(broken).toHaveLength(1);
-    expect(broken[0].statement).toContain("nightly");
-    expect(broken[0]).toMatchObject({ detail: "rejected", count: 1 });
-  });
-
-  // The Slack bookkeeping kinds carry a `key` the events route looks up by;
-  // a worker row of those kinds without one would be a phantom send.
+  // Convex-owned kinds cannot be posted through the generic worker route.
   it("refuses a kind Convex writes itself, and a malformed kind", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convexTest({ schema, modules });
-    expect((await post(t, "/tts/event", { kind: "slack-sent" })).status).toBe(400);
     expect((await post(t, "/tts/event", { kind: "thread-reply", data: {} })).status).toBe(400);
     expect((await post(t, "/tts/event", { kind: "Nightly Run" })).status).toBe(400);
     expect((await post(t, "/tts/event", { data: {} })).status).toBe(400);
@@ -123,7 +97,7 @@ describe("GET /tts/learning-input", () => {
     vi.unstubAllEnvs();
   });
 
-  it("returns Tom's turns, his Slack replies and his rulings in the window, and nothing an agent wrote", async () => {
+  it("returns Tom's turns and his rulings in the window, and nothing an agent wrote", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convexTest({ schema, modules });
     const now = Date.now();
@@ -159,14 +133,6 @@ describe("GET /tts/learning-input", () => {
         createdAt: now,
         updatedAt: now,
       });
-      await ctx.db.insert("dtsEvents", {
-        at: now,
-        kind: "slack-event",
-        key: "Ev1",
-        todoId,
-        data: { text: "done", outcome: "completed" },
-      });
-      await ctx.db.insert("dtsEvents", { at: now, kind: "surfaced", todoId });
       await ctx.db.insert("rulings", {
         subjectType: "life",
         todoId,
@@ -190,8 +156,6 @@ describe("GET /tts/learning-input", () => {
     expect(input.tomTurns[0].sessionTitle).toBe("the lease");
     // The SDK session id rides each turn: the pages cite its 8-hex prefix.
     expect(input.tomTurns[0].sdkSessionId).toBe("47f04bc9-1111-4222-8333-444444444444");
-    expect(input.slackReplies).toHaveLength(1);
-    expect(input.slackReplies[0].data.text).toBe("done");
     expect(input.rulings.map((r: { verdict: string }) => r.verdict)).toEqual(["revise"]);
     expect(input.rulings[0].quote).toBe("ask for a shorter term");
   });
@@ -328,7 +292,7 @@ describe("GET /tts/learning-input", () => {
   // afterwards, so a day with more than 2000 agent turns — an ordinary day —
   // returned none of Tom's, and the learning step would have learned nothing
   // while reporting a clean run.
-  it("finds Tom's turn and his Slack reply behind more rows than the cap", async () => {
+  it("finds Tom's turn behind more rows than the cap", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convexTest({ schema, modules });
     const now = Date.now();
@@ -343,15 +307,6 @@ describe("GET /tts/learning-input", () => {
         nextSeq: 1,
         createdAt: now,
       });
-      const todoId = await ctx.db.insert("dtsTodos", {
-        statement: "x",
-        readiness: "unprepared",
-        status: "active",
-        timingClass: "whenever",
-        source: "test",
-        createdAt: now,
-        updatedAt: now,
-      });
       for (let i = 0; i < LEARNING_INPUT_MAX + 1; i++) {
         await ctx.db.insert("claudeInbound", {
           sessionId,
@@ -361,7 +316,6 @@ describe("GET /tts/learning-input", () => {
           status: "done",
           createdAt: now,
         });
-        await ctx.db.insert("dtsEvents", { at: now, kind: "surfaced", todoId });
       }
       // Tom's, last: behind every one of them.
       await ctx.db.insert("claudeInbound", {
@@ -372,20 +326,10 @@ describe("GET /tts/learning-input", () => {
         status: "done",
         createdAt: now,
       });
-      await ctx.db.insert("dtsEvents", {
-        at: now,
-        kind: "slack-event",
-        key: "Ev9",
-        todoId,
-        data: { text: "not that one" },
-      });
     });
     const res = await get(t, `/tts/learning-input?since=${now - 3_600_000}&until=${now + 3_600_000}`);
     const input = await res.json();
     expect(input.tomTurns.map((x: { text: string }) => x.text)).toEqual(["do the lease first"]);
-    expect(input.slackReplies.map((x: { data: { text: string } }) => x.data.text)).toEqual([
-      "not that one",
-    ]);
   }, 120_000);
 
   // Tom's ruling 2026-09-25: a therapy session owns the mental-health page

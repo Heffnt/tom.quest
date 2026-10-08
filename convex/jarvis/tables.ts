@@ -2,8 +2,8 @@
 //
 // Convex has no table rename, so the old dtsRulings rows were COPIED into
 // `rulings` (convex/schema.ts), every field kept, and the old row's _id kept
-// as `legacyId` so an id cited outside the record (the evidence, a Slack
-// thread, a box file, WikiTom's tts/snapshot) still finds its row (resolveId
+// as `legacyId` so an id cited outside the record (the evidence, a box file,
+// WikiTom's tts/snapshot) still finds its row (resolveId
 // below). The copy and the label remap ran in production on 2026-09-26
 // (09:01Z and 09:04Z) and went with this stack; every ruling since is written
 // to `rulings`. dtsRulings is no longer declared (the table sweep, design
@@ -18,7 +18,7 @@
 // left here.
 //
 // AN ID IN EITHER FORM. An id reaches the record from outside as the plain
-// row's, or as the old one's (an old link, a Slack thread, a box file, and a
+// row's, or as the old one's (an old link, a box file, and a
 // reference a ruling, event, session or run stored before step C).
 // `eitherId` is the argument validator that takes both; `resolveId` answers
 // the plain row, which every reader reads and every writer writes.
@@ -29,8 +29,8 @@
 // row exists only in the plain table, with no legacyId, and a creating door
 // answers its plain id. Everything that stores a reference to a todo, block
 // or time note stores the plain id (a block's and a time note's todoId and
-// blockId, rulings.todoId, the events' todoId, a session's, a run's, a Slack
-// thread's todo subject). Those fields still take either id (existing rows
+// blockId, rulings.todoId, the events' todoId, a session's and a run's todo
+// subject). Those fields still take either id (existing rows
 // hold old ones; the schema was widened, never narrowed), and every reader of
 // a stored reference reads both forms as the one todo (todoIdForms,
 // todoEvents, todoRulings; withPlainTodoIds before liveRulings).
@@ -99,16 +99,16 @@ async function copyOf(ctx: QueryCtx | MutationCtx, table: "rulings" | Core, lega
 type Plain = "rulings" | Core;
 
 /** A core id as a function argument takes it from outside the record: the
- *  plain row's id, or the id its row had in the old table (an old link, a
- *  Slack thread, a box file, a stored reference). resolveId reads it. */
+ *  plain row's id, or the id its row had in the old table (an old link, a box
+ *  file, a stored reference). resolveId reads it. */
 export const eitherId = {
   todos: v.union(v.id("todos"), v.id("dtsTodos")),
 } as const;
 
 /**
  * An id as anything outside the record spells it: an id of the plain table,
- * or the id its row had in the old one (the box's files, a Slack thread, a
- * label's ref, the evidence, a reference another table stores). The one
+ * or the id its row had in the old one (the box's files, a label's ref, the
+ * evidence, a reference another table stores). The one
  * reader of legacyId; null when neither names a row.
  *
  * A TODO REFERENCE NAMING NO ROW NAMES NO TODO. No todo is ever deleted, so
@@ -220,25 +220,6 @@ export async function todoEvents(
     out.push(...(await ctx.db.query("dtsEvents").withIndex("by_todo", (q) => q.eq("todoId", form).gte("at", from)).collect()));
   }
   return out.sort((a, b) => a.at - b.at || a._creationTime - b._creationTime);
-}
-
-/** Whether a todo has an event of `kind` at or after `from`, under either id
- *  it is stored by: each form read through by_todo_kind to its first row, so
- *  no other kind of row on the todo is read. */
-export async function todoHasEventSince(
-  ctx: QueryCtx | MutationCtx,
-  id: string,
-  kind: string,
-  from: number,
-): Promise<boolean> {
-  for (const form of await todoIdForms(ctx, id)) {
-    const hit = await ctx.db
-      .query("dtsEvents")
-      .withIndex("by_todo_kind", (q) => q.eq("todoId", form).eq("kind", kind).gte("at", from))
-      .first();
-    if (hit !== null) return true;
-  }
-  return false;
 }
 
 /** The newest `n` events on a todo under either id they store it by, newest
@@ -364,8 +345,7 @@ async function mirror(ctx: QueryCtx | MutationCtx, table: Core, row: Row, direct
 /**
  * An old row's version: its fields less its own stamp, in canonical JSON,
  * through FNV-1a in two 32-bit lanes. Change detection, not security; a
- * clock would miss a write that leaves updatedAt alone (a Slack reply ts),
- * and a block has none.
+ * clock would miss a write that leaves updatedAt alone, and a block has none.
  */
 function versionOf(row: Row): string {
   const fields = payload(row);

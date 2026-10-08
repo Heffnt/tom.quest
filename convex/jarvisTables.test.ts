@@ -60,7 +60,6 @@ describe("rulings under their plain name", () => {
       "readTodo",
       "resolveId",
       "todoEvents",
-      "todoHasEventSince",
       "todoIdForms",
       "todoReader",
       "todoRulings",

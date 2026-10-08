@@ -546,9 +546,8 @@ export default function Agent({
       />
 
       {/* The composer is for a session and for nothing else — never on a
-          background run, never on a child, at any depth. Slack is how Tom
-          interacts with a background run (§20.4), and a disabled composer on a
-          run would be a control over nothing. */}
+          background run, never on a child, at any depth. A disabled composer
+          on a run would be a control over nothing. */}
       {session && (
         <Composer
           session={session}

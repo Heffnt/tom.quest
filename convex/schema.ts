@@ -55,7 +55,7 @@ export default defineSchema({
   // program): every Jarvis row that is not a todo, a ruling, a calendar row, a
   // repeat, a vocabulary entry or a transcript row is an event
   // here. What happened (kind), when (at), who (provenance), about what
-  // (subject), the facts (data) and the digest's line (text). The kinds are
+  // (subject), the facts (data) and optional display text (text). The kinds are
   // the closed list in shared/jarvis-events.mjs; the writer is
   // convex/jarvis/events.ts recordEvent, behind POST /jarvis/event and the
   // Convex-internal reporters; the readers are GET /jarvis/events and the
@@ -83,8 +83,8 @@ export default defineSchema({
     // job report names (`poll-canvas:canvas-auth`).
     subject: v.optional(v.string()),
     data: v.any(),
-    // The one line the digest prints for this row; absent means the digest
-    // derives it from kind and data, or leaves the row out.
+    // Optional display text; absent means a reader derives it from kind and
+    // data, or leaves the row out.
     text: v.optional(v.string()),
   })
     .index("by_at", ["at"])
@@ -106,7 +106,7 @@ export default defineSchema({
     .index("by_kind_agent_at", ["kind", "provenance.agentId", "at"])
     // One condition's rows of one kind: the jobs area's standing check (a
     // job-failed not closed by a later job-recovered under the same subject)
-    // and the digest's read of one condition, without a scan of every job's
+    // and a read of one condition, without a scan of every job's
     // failures (convex/jarvis/jobs.ts).
     .index("by_kind_subject_at", ["kind", "subject", "at"])
     // One subject's rows of one kind in the order the record inserted them:
@@ -119,7 +119,7 @@ export default defineSchema({
     .index("by_kind_subject", ["kind", "subject"])
     // One kind's rows that are not a standing condition's repeat (a
     // job-failed posted while its condition stands carries
-    // data.standingSince): the digest's read of the failures that opened a
+    // data.standingSince): a read of the failures that opened a
     // condition, which a window of one job's repeats must not crowd out
     // (convex/jarvis/jobs.ts failuresInWindow).
     .index("by_kind_standing_at", ["kind", "data.standingSince", "at"])
@@ -128,17 +128,15 @@ export default defineSchema({
     // (convex/jarvis/events.ts recordEvent), and of a standing ruling
     // (convex/jarvis/rulings.ts recordStanding).
     .index("by_kind_data_id", ["kind", "data.id"])
-    // One scope's standing rulings, newest first: the ask reader's read
+    // One scope's standing rulings, newest first: the ask reader's
     // (convex/jarvis/rulings.ts standingRulings). data.standing is in the
     // index so a superseded ruling is never read, however many there are.
     .index("by_kind_subject_standing_at", ["kind", "subject", "data.standing", "at"])
-    // Superseded rulings in the order they were ended: the digest's read of
-    // the ones it has not yet printed (convex/ttsDigest.ts), on their own
-    // index so no other kind's rows can crowd one out.
+    // Superseded rulings in the order they were ended, on their own index so
+    // no other kind's rows can crowd one out.
     .index("by_kind_standing_superseded_at", ["kind", "data.standing", "data.supersededAt"])
     // One kind's rows by when the record wrote them (_creationTime, which ends
-    // every index): the digest's read of post-history-cut box changes recorded
-    // in its window, however long after they happened (convex/boxChanges.ts).
+    // every index), however long after they happened.
     .index("by_kind", ["kind"]),
 
   userSettings: defineTable({
@@ -397,13 +395,11 @@ export default defineSchema({
   dtsTodos: defineTable({
     statement: v.string(),
     body: v.optional(v.string()),
-    // Set at capture when a poller's triage judged the item to need Tom
-    // TODAY, with the triage's own few words (empty when it gave none). No
-    // worker raises it with him (Tom, 2026-09-21); the morning message and the
-    // hourly line read it here and say it. Its own field because nothing else
-    // on the row can hold it: `statement` is display text the preparer
-    // rewrites, `body` is the preparer's, and `provenance` is the source line
-    // Tom reads, where a judgement would pose as a fact about the source.
+    // RETIRED with Slack and the digest (tom.quest 392): the morning message
+    // and the hourly line that read it are gone and nothing writes it. It
+    // stays declared until the rows that carry it are cleared (the table
+    // sweep that follows the removals), because convex deploy refuses a
+    // stored field the schema does not declare.
     needsTomToday: v.optional(v.object({ why: v.string() })),
     // NARROWED (the lifeos update, phase 7): two values, unprepared |
     // prepared. The retired spellings were mapped by
@@ -445,7 +441,8 @@ export default defineSchema({
     ),
     // The plain table's rollover mark (todos.rolledOverDueAt), declared here
     // so jarvis/tables.ts copyBack, which copies every field, can copy a row
-    // that carries it. Nothing reads it on this table.
+    // that carries it. Nothing reads it on this table, and the rollover that
+    // wrote it went with the digest (tom.quest 392).
     rolledOverDueAt: v.optional(v.number()),
     // THE GOAL CONDITION — on a `kind: "goal"` row this is the checkable
     // sentence about the world that says the goal is met ("the lease is
@@ -480,27 +477,21 @@ export default defineSchema({
     // the pens). A row with this set is FROZEN: the planner
     // (tts.internalStorePlanGraph) may never rewrite or retire it.
     tomTouchedAt: v.optional(v.number()),
-    // "manual" | "slack-capture" | "consolidation" | "email" | "session-sweep"
+    // "manual" | "consolidation" | "email" | "session-sweep"
     // | "prospecting" | … Each name means ONE fact: the two Canvas producers
     // are "canvas" (assignments, convex/ttsCanvas.ts) and "canvas-announcement"
     // (worker/jobs/poll-canvas.mjs), never one shared name.
     source: v.string(),
     provenance: v.optional(v.string()), // link/descriptor of where it came from
-    // ── Slack coordinates of the #dump message this was captured from ────────
-    // Tom's ruling 2026-08-30: TTS replies ONCE, in thread, to every #dump
-    // message, saying how it processed that message. Answering "which message
-    // do I reply to?" needs the channel and the message ts as MACHINE fields.
-    //
-    // DELIBERATELY NOT overloaded into `provenance`: Tom reads provenance, it
-    // holds a permalink for him, and parsing a ts back out of a URL would make
-    // his field load-bearing for a machine.
-    //
-    // slackTs is also the DEDUPE key for the Slack Events push route (Slack
-    // retries deliver the same event more than once) — see by_slackTs below.
+    // RETIRED with Slack and the digest (tom.quest 392): the #dump capture
+    // and its one threaded reply are gone and nothing writes these four. They
+    // stay declared until the rows that carry them are cleared (the table
+    // sweep that follows the removals), because convex deploy refuses a
+    // stored field the schema does not declare.
     slackChannel: v.optional(v.string()),
     slackTs: v.optional(v.string()),
-    slackReplyTs: v.optional(v.string()), // ts of OUR reply, so it can be edited
-    slackRepliedAt: v.optional(v.number()), // the "replied once" guard
+    slackReplyTs: v.optional(v.string()),
+    slackRepliedAt: v.optional(v.number()),
     workDescription: v.optional(v.string()), // qualitative, never a numeric estimate (spec §5.3)
     entryAction: v.optional(v.string()), // the one-click smallest next action (spec §13)
     brief: v.optional(v.string()), // ground-up brief, markdown
@@ -581,12 +572,11 @@ export default defineSchema({
   })
     .index("by_status", ["status", "updatedAt"])
     .index("by_updatedAt", ["updatedAt"])
-    // The dated reads: the 5 a.m. missed rollover ("active rows whose date is
-    // before the new day") and the digest's due-and-overdue section ("active
-    // rows due by the end of today"). Both used to scan every active row, or
-    // the whole table, and filter in code. Undated rows sort BEFORE every
-    // number in the index, so a range starting at gte("dueAt", 0) reads the
-    // dated ones only.
+    // The dated read: one status's rows by due date, so the open-todos
+    // reader (convex/jarvis/todos.ts open) takes the soonest due first
+    // without scanning the table. Undated rows sort BEFORE every number in
+    // the index, so a range starting at gte("dueAt", 0) reads the dated ones
+    // only, and eq("dueAt", undefined) reads the undated ones.
     .index("by_status_and_due", ["status", "dueAt"])
     .index("by_readiness", ["readiness"])
     // Ingestion lookups: the Canvas ASSIGNMENT sync and the repeating-todo
@@ -594,12 +584,7 @@ export default defineSchema({
     // provenance match, without scanning the whole table. The source alone is
     // never the whole key — a reader that skips the provenance match adopts
     // every other producer's rows under that name.
-    .index("by_source", ["source"])
-    // The Slack Events push route's dedupe read: Slack's delivery is
-    // at-least-once and its retries carry the same message ts, so a capture
-    // looks itself up by ts before inserting. A scan would be a full-table
-    // read on the hot path of a route that must answer within 3 seconds.
-    .index("by_slackTs", ["slackTs"]),
+    .index("by_source", ["source"]),
 
   // todos: the plain-named home of dtsTodos's rows (the record's core tables,
   // 2026-09-26). Its payload and source indexes match dtsTodos except `needs`
@@ -608,13 +593,11 @@ export default defineSchema({
   todos: defineTable({
     statement: v.string(),
     body: v.optional(v.string()),
-    // Set at capture when a poller's triage judged the item to need Tom
-    // TODAY, with the triage's own few words (empty when it gave none). No
-    // worker raises it with him (Tom, 2026-09-21); the morning message and the
-    // hourly line read it here and say it. Its own field because nothing else
-    // on the row can hold it: `statement` is display text the preparer
-    // rewrites, `body` is the preparer's, and `provenance` is the source line
-    // Tom reads, where a judgement would pose as a fact about the source.
+    // RETIRED with Slack and the digest (tom.quest 392): the morning message
+    // and the hourly line that read it are gone and nothing writes it. It
+    // stays declared until the rows that carry it are cleared (the table
+    // sweep that follows the removals), because convex deploy refuses a
+    // stored field the schema does not declare.
     needsTomToday: v.optional(v.object({ why: v.string() })),
     // NARROWED (the lifeos update, phase 7): two values, unprepared |
     // prepared. The retired spellings were mapped by
@@ -654,13 +637,11 @@ export default defineSchema({
         }),
       ),
     ),
-    // THE ROLLOVER'S MARK: the date the 5 a.m. missed rollover last settled
-    // this todo for, by marking it missed or finding an outcome already
-    // recorded for that date (convex/ttsDigest.ts rollMissed). The rollover
-    // reads only active past-dated rows without it (by_status_rollover_due),
-    // so rows it settled on earlier mornings never use up its read budget.
-    // Every write that changes dueAt clears it (convex/tts.ts DATE_MOVED), so
-    // a new date that passes is rolled again.
+    // The date the 5 a.m. missed rollover last settled this todo for. That
+    // rollover ran inside the digest code and went with the digest (tom.quest
+    // 392); nothing writes this field now. The writes that change dueAt still
+    // clear it (convex/tts.ts DATE_MOVED). It stays declared because rows
+    // carry it (stored data), until those rows are cleared.
     rolledOverDueAt: v.optional(v.number()),
     // THE GOAL CONDITION — on a `kind: "goal"` row this is the checkable
     // sentence about the world that says the goal is met ("the lease is
@@ -695,27 +676,21 @@ export default defineSchema({
     // the pens). A row with this set is FROZEN: the planner
     // (tts.internalStorePlanGraph) may never rewrite or retire it.
     tomTouchedAt: v.optional(v.number()),
-    // "manual" | "slack-capture" | "consolidation" | "email" | "session-sweep"
+    // "manual" | "consolidation" | "email" | "session-sweep"
     // | "prospecting" | … Each name means ONE fact: the two Canvas producers
     // are "canvas" (assignments, convex/ttsCanvas.ts) and "canvas-announcement"
     // (worker/jobs/poll-canvas.mjs), never one shared name.
     source: v.string(),
     provenance: v.optional(v.string()), // link/descriptor of where it came from
-    // ── Slack coordinates of the #dump message this was captured from ────────
-    // Tom's ruling 2026-08-30: TTS replies ONCE, in thread, to every #dump
-    // message, saying how it processed that message. Answering "which message
-    // do I reply to?" needs the channel and the message ts as MACHINE fields.
-    //
-    // DELIBERATELY NOT overloaded into `provenance`: Tom reads provenance, it
-    // holds a permalink for him, and parsing a ts back out of a URL would make
-    // his field load-bearing for a machine.
-    //
-    // slackTs is also the DEDUPE key for the Slack Events push route (Slack
-    // retries deliver the same event more than once) — see by_slackTs below.
+    // RETIRED with Slack and the digest (tom.quest 392): the #dump capture
+    // and its one threaded reply are gone and nothing writes these four. They
+    // stay declared until the rows that carry them are cleared (the table
+    // sweep that follows the removals), because convex deploy refuses a
+    // stored field the schema does not declare.
     slackChannel: v.optional(v.string()),
     slackTs: v.optional(v.string()),
-    slackReplyTs: v.optional(v.string()), // ts of OUR reply, so it can be edited
-    slackRepliedAt: v.optional(v.number()), // the "replied once" guard
+    slackReplyTs: v.optional(v.string()),
+    slackRepliedAt: v.optional(v.number()),
     threadMessageId: v.optional(v.string()), // the Jarvis-thread message this todo came from; the capture dedupes on it
     workDescription: v.optional(v.string()), // qualitative, never a numeric estimate (spec §5.3)
     entryAction: v.optional(v.string()), // the one-click smallest next action (spec §13)
@@ -775,8 +750,8 @@ export default defineSchema({
     doneAt: v.optional(v.number()),
     archivedAt: v.optional(v.number()),
     // The row's _id in dtsTodos before the rename (convex/jarvis/tables.ts
-    // copies it here), so an id cited in the evidence, a Slack thread or
-    // a box file still finds its row. Absent on rows written after it.
+    // copies it here), so an id cited in the evidence or a box file
+    // still finds its row. Absent on rows written after it.
     legacyId: v.optional(v.string()),
     // The dual write's stamp: the version of the old row this copy was last
     // written from (convex/jarvis/tables.ts, `follow`); it must match it.
@@ -815,17 +790,12 @@ export default defineSchema({
   })
     .index("by_status", ["status", "updatedAt"])
     .index("by_updatedAt", ["updatedAt"])
-    // The dated reads: the 5 a.m. missed rollover ("active rows whose date is
-    // before the new day") and the digest's due-and-overdue section ("active
-    // rows due by the end of today"). Both used to scan every active row, or
-    // the whole table, and filter in code. Undated rows sort BEFORE every
-    // number in the index, so a range starting at gte("dueAt", 0) reads the
-    // dated ones only.
+    // The dated read: one status's rows by due date, so the open-todos
+    // reader (convex/jarvis/todos.ts open) takes the soonest due first
+    // without scanning the table. Undated rows sort BEFORE every number in
+    // the index, so a range starting at gte("dueAt", 0) reads the dated ones
+    // only, and eq("dueAt", undefined) reads the undated ones.
     .index("by_status_and_due", ["status", "dueAt"])
-    // The missed rollover's read: active rows it has not settled for their
-    // current date (no rolledOverDueAt), by date. A missing field indexes as
-    // undefined, so eq("rolledOverDueAt", undefined) is the unsettled range.
-    .index("by_status_rollover_due", ["status", "rolledOverDueAt", "dueAt"])
     .index("by_readiness", ["readiness"])
     .index("by_batch", ["batchId"])
     // Ingestion lookups: the Canvas ASSIGNMENT sync and the repeating-todo
@@ -839,11 +809,6 @@ export default defineSchema({
     // by source "manual" and their one provenance line, a range that holds
     // the seven and nothing else however many manual todos accumulate.
     .index("by_source_provenance", ["source", "provenance"])
-    // The Slack Events push route's dedupe read: Slack's delivery is
-    // at-least-once and its retries carry the same message ts, so a capture
-    // looks itself up by ts before inserting. A scan would be a full-table
-    // read on the hot path of a route that must answer within 3 seconds.
-    .index("by_slackTs", ["slackTs"])
     .index("by_threadMessageId", ["threadMessageId"])
     .index("by_legacy", ["legacyId"])
     .index("by_writeId", ["writeId"]),
@@ -905,8 +870,8 @@ export default defineSchema({
     // sentence or line of that row the agent read as the ruling. Provenance
     // only: it is never copied into `sentence` above (the archive return
     // condition the page shows, the revise redirect the worker reads).
-    // Absent on every ruling recorded through the UI. The digest quotes these
-    // so a misreading is objected; the same row never rules on the same
+    // Absent on every ruling recorded through the UI. A misreading can be
+    // objected to; the same row never rules on the same
     // subject twice (checked in ttsRulings.ts, by the index below).
     provenance: v.optional(
       v.object({
@@ -916,7 +881,7 @@ export default defineSchema({
       }),
     ),
     // The row's _id in dtsRulings before the rename (convex/jarvis/tables.ts
-    // copied it here), so an id cited in the evidence, a Slack thread or
+    // copied it here), so an id cited in the evidence or
     // a box file still finds its row. Absent on rows written after it.
     legacyId: v.optional(v.string()),
   })
@@ -930,7 +895,7 @@ export default defineSchema({
   // Append-only instrumentation (spec §10) — every surfacing, engagement,
   // queue cycle, status change, and date outcome, recorded from the first
   // hour. Tom-visible. `kind` is a free string by convention ("created",
-  // "surfaced", "engaged", "queue-cycled", "status-changed", "date-outcome",
+  // "engaged", "queue-cycled", "status-changed", "date-outcome",
   // "woke", "captured", ...).
   dtsEvents: defineTable({
     at: v.number(),
@@ -947,30 +912,8 @@ export default defineSchema({
     // week, and the model's most likely response to an instruction to fix
     // something already fixed is to restructure something else.
     consumedAt: v.optional(v.number()),
-    // The lookup key, set on sixteen kinds. Three of them no longer arrive
-    // here (night/w4, 2026-09-26): their home is the `events` table, and the
-    // rows here are history, copied there once that night (the one-time
-    // convex/jarvis/history.ts, since deleted). They were:
-    //   "box-change"  — the agentId the box matched to the change (now
-    //                   events.provenance.agentId);
-    //   "job-failed", "job-recovered" — the condition a job report names (now
-    //                   events.subject), under "Two are convex/ttsJobs.ts" below.
-    // The others: Five are convex/ttsSlack.ts:
-    //   "slack-sent"  — `${channel}:${thread root ts}`, so a threaded reply
-    //                   from Tom finds what it answers by (channel, thread_ts);
-    //   "slack-event" — Slack's event_id, so a redelivered event is dropped;
-    //   "needs-tom"   — the producer's own id for the thing that needs Tom
-    //                   (`gmail:message:<id>`), so one mail opens one thread;
-    //   "slack-thread-claimed"
-    //                 — the same `${channel}:${thread ts}` as "slack-sent", so
-    //                   a replacement session claims the thread in the same
-    //                   transaction that creates it and a second reply joins
-    //                   it rather than opening a second replacement.
-    //   "slack-claimed"
-    //                 — `<TTS day>:<ask>:<item id>`, so one item is asked
-    //                   about once a day whichever channel gets there first
-    //                   (convex/ttsCompose.ts claimKey).
-    // Two are convex/ttsJobs.ts, where the key names a CONDITION on the Jarvis
+    // The lookup key is historical for several retired dtsEvents kinds.
+    // Two kinds came from convex/ttsJobs.ts, where the key names a condition on the Jarvis
     // Box rather than a message:
     //   "job-failed"    — e.g. `poll-canvas:canvas-auth`, so a dead credential
     //                     is one row until it is fixed, not one every tick;
@@ -981,8 +924,8 @@ export default defineSchema({
     // with Tom's ruling of 2026-09-24; older rows still carry that key.)
     // Two are convex/ttsAsk.ts, the delegate's record:
     //   "delegate-decision" — the ask's own id, so a second POST of the same
-    //                   ask writes nothing and the digest, the caller's next
-    //                   run and Tom's objection all name one row;
+    //                   ask writes nothing and the caller's next run and
+    //                   Tom's objection all name one row;
     //   "delegate-objection"
     //                 — the SAME askId, so "what was decided, and did Tom
     //                   object" is two reads one index apart;
@@ -1012,15 +955,11 @@ export default defineSchema({
     //   "deploy"      — `<repo>:<sha>`, the spelling "merge" uses, naming the
     //                   head the box now runs, so one deploy is one event.
     // `data` is v.any() and cannot be indexed, which is why the key is its
-    // own field: the events route must answer inside Slack's 3-second budget,
-    // and a thread root can be days old, so a bounded scan is not enough.
+    // own field, so a bounded scan is not enough.
     key: v.optional(v.string()),
   })
     .index("by_at", ["at"])
     .index("by_todo", ["todoId", "at"])
-    // One kind on one todo from a time on: whether his reply followed a
-    // needs-you (convex/jarvis/tables.ts todoHasEventSince), read to its
-    // first row with no filter over the todo's other rows.
     .index("by_todo_kind", ["todoId", "kind", "at"])
     // The row for one thread, event id, producer id or box condition:
     // eq(kind), eq(key) — and with `key` pinned, `at` orders what comes back.
@@ -1029,10 +968,7 @@ export default defineSchema({
     // `key`. This used to be the second shape of by_kind_key, read with `key`
     // pinned to undefined — which was exact only for as long as no row of that
     // kind had a key, and silently dropped every row of a kind that later grew
-    // one ("job-failed" did). The digest's last "digest-sent" row
-    // (convex/ttsDigest.ts) read here instead of taking N
-    // rows off by_at and filtering: past N rows a by_at read silently answers
-    // wrong.
+    // one ("job-failed" did).
     .index("by_kind_at", ["kind", "at"])
     // One delegate caller's asks in a window (convex/ttsAsk.ts callerAsks):
     // an ask row names its caller as data.sessionId or data.job, the other
@@ -1061,7 +997,7 @@ export default defineSchema({
     syncedAt: v.number(), // the commit's time, not the post's
     // Whether the commit had reached GitHub when it was posted. The job posts
     // local HEAD even when its push was refused, so a prompt names the commit
-    // it began with; false is what lets the digest say "not yet pushed".
+    // it began with; false records that it was not yet pushed.
     // It remains optional because rows posted before that flag still inhabit
     // this table until the next whole replacement.
     pushed: v.optional(v.boolean()),
@@ -1673,6 +1609,10 @@ export default defineSchema({
   // channels, so this is deliberately not a mutable field on runs.
   runLabels: defineTable({
     runId: v.string(), rowSpan: v.optional(v.object({ seqStart: v.number(), seqEnd: v.number() })),
+    // "digest-reaction" is RETIRED with Slack and the digest (tom.quest 392):
+    // nothing writes it. It stays in the union until the rows that carry it
+    // are cleared (the table sweep that follows the removals), because convex
+    // deploy refuses a stored value outside the union.
     source: v.union(v.literal("ruling"), v.literal("objection"), v.literal("session-reply"), v.literal("digest-reaction")),
     // Always "tom". The writer refuses any other value: a label is what TOM
     // did about a run's output, and an agent writing a label about another
@@ -1686,8 +1626,8 @@ export default defineSchema({
     // row's own fields.
     meaning: v.string(), judgment: v.boolean(),
     // REQUIRED, and narrowed from optional deliberately. Every label has one
-    // act behind it and idempotency needs that act's key: Slack delivers at
-    // least once, and a ruling written twice by two doors must make ONE label.
+    // act behind it and idempotency needs that act's key: a ruling written
+    // twice by two doors must make ONE label.
     // Narrowing a field is normally refused while a writer exists — this table
     // had no writer and no row when the narrowing was made, so it was free.
     ref: v.string(), at: v.number(),
@@ -1722,9 +1662,8 @@ export default defineSchema({
       v.literal("stop"),
     ),
     text: v.optional(v.string()),
-    // Who wrote a user-turn: "tom" for a turn Tom typed (the browser door, or
-    // a Slack reply the events route verified came from TOM_SLACK_USER_ID),
-    // "agent" for the CLI pen and the code-built opener. A row from before
+    // Who wrote a user-turn: "tom" for a turn Tom typed through the browser
+    // door, "agent" for the CLI pen and the code-built opener. A row from before
     // the field has no author and counts as not Tom.
     //
     // Only a "tom" row can be the source of a ruling written from his words

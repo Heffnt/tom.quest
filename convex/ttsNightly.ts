@@ -5,8 +5,8 @@
 //
 //   GET  /tts/learning-input what the learning step reads: the turns Tom
 //                            typed since the last learning run with the
-//                            agent's replies around them, his Slack replies,
-//                            his rulings, and the objections not yet applied
+//                            agent's replies around them, his rulings, and
+//                            the objections not yet applied
 //   POST /tts/event          one dtsEvents row — how the job records a
 //                            failed step, its learning run, each change it
 //                            made, each reversal, and its summary
@@ -20,20 +20,16 @@ import { v } from "convex/values";
 import { internalMutation, internalQuery } from "./_generated/server";
 import { clip } from "../shared/clip.mjs";
 import { rowSource, type RowSource } from "./sessionRows";
-// The kinds this pen routes onward besides LEARNING_CHANGE. Their rows,
+// The kinds this pen routes onward. Their rows,
 // their fields and the reasoning are documented where they are declared.
 import { BOX_CHANGE, boxChangeEvent, boxChangeFaults, type BoxChange } from "./boxChanges";
 import { copyDtsRow, recordEvent } from "./jarvis/events";
-import { listForDigest } from "./jarvis/outbox";
-import { LEARNING_CHECK_FAILED, REPO_PROPOSAL } from "./ttsDigest";
 
 // ── The learning input ───────────────────────────────────────────────────────
 // The learning step reads what Tom did: the turns he typed in sessions
-// (claudeInbound rows authored "tom" — the browser door and Slack replies the
-// events route verified came from his user id), the agent's reply on either
+// (claudeInbound rows authored "tom"), the agent's reply on either
 // side of each (what he was answering and what came of it — the context his
 // words are read in, never a source of lines on their own), his threaded
-// Slack replies (the "slack-event" rows the events route writes), and his
 // rulings — never the spec (design section 4, "Learning").
 //
 // THE WINDOW starts where the last learning run's ended: `since` is optional
@@ -167,18 +163,6 @@ export const internalLearningInput = internalQuery({
         replyAfter,
       });
     }
-    // by_kind_at, not by_at: the kind is pinned and `at` orders what comes
-    // back, so the cap falls on Tom's replies rather than on a window whose
-    // other kinds outnumber them. (by_kind_key cannot serve this — its rows
-    // are ordered by event id, and "slack-event" rows all carry one.)
-    const slackReplies = (
-      await ctx.db
-        .query("dtsEvents")
-        .withIndex("by_kind_at", (q) =>
-          q.eq("kind", "slack-event").gte("at", since).lt("at", until),
-        )
-        .take(LEARNING_INPUT_MAX)
-    ).map((e) => ({ id: e._id, at: e.at, todoId: e.todoId, data: e.data }));
     const rulings = (
       await ctx.db
         .query("rulings")
@@ -308,7 +292,6 @@ export const internalLearningInput = internalQuery({
       sinceSource,
       until,
       tomTurns,
-      slackReplies,
       rulings,
       objections,
       changes,
@@ -357,7 +340,7 @@ export const internalOpenRepoProposals = internalQuery({
  * "applied", the commit and the FINAL wording are stamped on it — the review
  * may have changed the words, and the next night's reconcile rewrites the
  * evidence entry to what actually merged — and a "repo-proposal-applied" event
- * carries it to the digest.
+ * carries it to the record.
  *
  * An id that names no open proposal is reported rather than thrown: a session
  * that applied a line twice, or named a proposal Tom had already dropped, is
@@ -398,9 +381,9 @@ export const internalApplyRepoProposal = internalMutation({
 });
 
 /**
- * Tom objected to a proposal on its digest line. The row's status becomes
- * "dropped" and a "repo-proposal-dropped" event carries it to the digest and
- * to the next night's repo-learning step, which writes `dropped:` on the
+ * Tom objected to a proposal. The row's status becomes "dropped" and a
+ * "repo-proposal-dropped" event carries it to the record and to the next
+ * night's repo-learning step, which writes `dropped:` on the
  * evidence entry — the record then says the rule was proposed and why it is
  * not a rule, which is what stops the next night proposing it again.
  */
@@ -459,20 +442,8 @@ export const internalConsumeLearningObjections = internalMutation({
 // "learning-change", "learning-reverted", "learning-revert-failed",
 // "nightly-run", both the night's summary and, keyed `WikiTom@<sha>`, each
 // commit it is about to push, which the merge gate reads: convex/ttsMerge.ts
-// NIGHTLY_RUN); the pattern keeps the pen to lowercase kebab-case names
-// rather than letting a worker write, say, "slack-sent" and confuse the
-// digest's own bookkeeping — the route refuses the kinds Convex writes itself.
+// NIGHTLY_RUN); the pattern keeps the pen to lowercase kebab-case names.
 export const EVENT_KIND_PATTERN = /^[a-z][a-z0-9-]{1,63}$/;
-export const RESERVED_EVENT_KINDS = new Set([
-  "slack-sent",
-  "slack-event",
-]);
-
-/** A line the nightly job wrote about Tom is a decision taken in his name, so
- *  it is a line on the digest's objection list (internalRecordWorkerEvent,
- *  listForDigest), its id printed: "revert <n>" or a reply naming the id in
- *  the digest's thread objects to it. */
-export const LEARNING_CHANGE = "learning-change";
 
 /**
  * A box change posted through the legacy pen (POST /tts/event, body { kind:
@@ -499,7 +470,7 @@ export const internalRecordWorkerEvent = internalMutation({
   // "weekly-run" row carries its day, so a rerun finds it on by_kind_key.
   args: { kind: v.string(), data: v.optional(v.any()), key: v.optional(v.string()) },
   handler: async (ctx, { kind, data, key }) => {
-    if (!EVENT_KIND_PATTERN.test(kind) || RESERVED_EVENT_KINDS.has(kind)) {
+    if (!EVENT_KIND_PATTERN.test(kind)) {
       throw new Error(`not a worker event kind: ${kind}`);
     }
     // A box change is a row of the record's events table, not of this one
@@ -511,69 +482,6 @@ export const internalRecordWorkerEvent = internalMutation({
     // copyDtsRow): a second mutation could fail or be retried after the first
     // committed, leaving one table without the row or the other with two.
     await copyDtsRow(ctx, row);
-    // A failure row written here (the nightly's, the weekly's) is a line in
-    // the digest's broken section, which reads every "-failed"/"-failure" row
-    // of its window (convex/ttsDigest.ts); the decisions below are lines on
-    // its objection list (convex/jarvis/outbox.ts listForDigest). One output
-    // channel: nothing here posts to Slack.
-    if (kind === LEARNING_CHANGE) {
-      const d = (data ?? {}) as Record<string, unknown>;
-      const file = typeof d.file === "string" ? d.file : "a model-of-Tom page";
-      const after = typeof d.after === "string" ? d.after : "";
-      const before = typeof d.before === "string" ? d.before : "";
-      const evidence = typeof d.evidence === "string" ? d.evidence : undefined;
-      // The id is printed so a reply naming it is an objection to this line
-      // (convex/ttsSlack.ts namedLearningChange), as "revert <n>" is.
-      const named = typeof d.id === "string" ? ` [${d.id}]` : "";
-      await listForDigest(ctx, {
-        section: "decisions",
-        askId: typeof d.id === "string" ? `learning:${d.id}` : `learning:${id}`,
-        decision:
-          before === ""
-            ? `${file} now says ${after}${named}`
-            : `${file} now says ${after} rather than ${before}${named}`,
-        ...(evidence === undefined ? {} : { reason: `it was learned from ${evidence}` }),
-      });
-    }
-    // A REPOSITORY-RULE PROPOSAL is the same act one directory over: the
-    // repo-learning step read the night's sessions and wrote a line it means
-    // to put in a repository's own AGENTS.md. It reaches him the same way, on
-    // the digest's objection list, and an objection there (its number, or its
-    // printed id) is what POST /tts/repo-proposal-dropped applies before the
-    // line ever reaches the repository.
-    if (kind === REPO_PROPOSAL) {
-      const d = (data ?? {}) as Record<string, unknown>;
-      const repo = typeof d.repo === "string" ? d.repo : "a repository";
-      const file = typeof d.file === "string" ? d.file : "its rules";
-      const line = typeof d.line === "string" ? d.line : "";
-      const read = typeof d.read === "string" ? d.read : undefined;
-      await listForDigest(ctx, {
-        section: "decisions",
-        askId: typeof d.id === "string" ? `repo-proposal:${d.id}` : `repo-proposal:${id}`,
-        decision: `${repo} ${file} is to say ${line}${typeof d.id === "string" ? ` [${d.id}]` : ""}`,
-        ...(read === undefined ? {} : { reason: `last night's sessions ${read}` }),
-      });
-    }
-    // A SIMPLIFICATION PROPOSAL and a REMOVAL-LOOP PULL REQUEST are read from
-    // their own rows by the digest's objection list (convex/ttsDigest.ts),
-    // keyed as they are here, so "revert <n>" in the digest's thread resolves
-    // the same row; a dry run's row goes to nobody.
-    // THE NIGHT THAT UNDID ITSELF. Not a decision — nothing stands to object
-    // to — and not a quiet night either, which is exactly the confusion a
-    // silent row would create. A broken line in the digest, in its own words
-    // (the digest's generic line for the "-failed" row is skipped for it).
-    if (kind === LEARNING_CHECK_FAILED) {
-      const d = (data ?? {}) as Record<string, unknown>;
-      const changes = typeof d.changes === "number" ? d.changes : typeof d.count === "number" ? d.count : 0;
-      await listForDigest(ctx, {
-        section: "broken",
-        job: "learning",
-        statement:
-          d.baseline === true
-            ? "The learning job wrote nothing about you last night: the evidence file was already failing its own check before the run started."
-            : `The learning job wrote ${changes} line${changes === 1 ? "" : "s"} about you last night and took every one back: the evidence check failed after the write.`,
-      });
-    }
     return id;
   },
 });

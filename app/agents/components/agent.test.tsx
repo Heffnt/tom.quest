@@ -460,8 +460,8 @@ describe("the composer", () => {
     expect(screen.getByText("Send")).toBeTruthy();
     cleanup();
 
-    // A background run: Slack is how Tom interacts with one (§20.4), and a
-    // composer here would be a control over nothing.
+    // A background run has no interactive control, and a composer here would
+    // be a control over nothing.
     loadTree();
     root();
     expect(screen.queryByText("Send")).toBeNull();

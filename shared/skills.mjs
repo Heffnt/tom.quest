@@ -116,7 +116,7 @@ export const SKILL_SHAPES = Object.freeze({
   write: Object.freeze({
     group: "write",
     base:
-      "Load before writing anything Tom reads — a report, an explanation, a Slack message, a digest line. His writing standard: ",
+      "Load before writing anything Tom reads — a report, an explanation or a message. His writing standard: ",
     suffix: "",
   }),
   explainer: Object.freeze({

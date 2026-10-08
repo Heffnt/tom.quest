@@ -84,16 +84,8 @@ export function callerRules(caller) {
  */
 export const INTENT_CALLERS = Object.freeze(["opener", "planner", "prepare", "weekly-input"]);
 
-/**
- * The callers granted `know-week` without a dated subject: the runs that read
- * or write the current week.
- *
- * THE DIGEST WRITER BELONGS IN THIS LIST AND IS NOT IN IT. The digest
- * (worker/jobs/write-slack.mjs) reaches context through a caller that has no
- * row of its own in CONTEXT_CALLERS at this commit, so there is no name to put
- * here. When it gets a row, its name goes in this array and nothing else
- * changes.
- */
+/** The callers granted `know-week` without a dated subject: the runs that read
+ * or write the current week. */
 export const WEEK_CALLERS = Object.freeze(["planner"]);
 
 // ── Subjects ─────────────────────────────────────────────────────────────────

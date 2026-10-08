@@ -2,7 +2,7 @@
 // hooks, the reads, and the copy from the previous generation's table.
 //
 // HOW AN AREA JOINS. Its kinds go in shared/jarvis-events.mjs; a kind that
-// has a side effect on the Convex side (a Slack line, a recovery, a todo
+// has a side effect on the Convex side (a recovery, a todo
 // touched) names its hook in AFTER_RECORD below, one line, importing the
 // area's file under convex/jarvis/. The box posts every kind through the one
 // route (routes.ts); nothing else on the box needs to know the hook exists.
@@ -13,7 +13,7 @@
 // old `key` as `subject`: a faithful copy, nothing invented. The copy is
 // the route's, not the writer's (logEvent), because /tts/event is the box's
 // one generic pen into dtsEvents and the other writers are Convex-internal
-// facts (Slack, digest, merge, sessions) whose areas move them here in their
+// facts (merge, sessions) whose areas move them here in their
 // own streams. A box change is no longer copied: the pen hands it to this
 // table's own write (convex/ttsNightly.ts internalRecordBoxChange), and the
 // box posts it through POST /jarvis/event with provenance.agentId, which is
@@ -27,8 +27,7 @@ import { requireTom } from "../authRoles";
 import { checkEvent, eventArgs, insertEvent } from "./record";
 import type { EventInput } from "./record";
 import { onJobFailed, onJobOk } from "./jobs";
-import { assertBoxChange, BOX_CHANGE, boxChangeSubject, onBoxChange } from "../boxChanges";
-import { onDigestSent, onNeedsYouPosted } from "./digest";
+import { assertBoxChange, BOX_CHANGE, boxChangeSubject } from "../boxChanges";
 import { resolveId } from "./tables";
 import { HANDOFF, onTodoState, prepareBuildRow, TODO_STATE } from "./build";
 import { SESSION_OUTCOME } from "../ttsShared";
@@ -38,9 +37,6 @@ import { REPEATS_BY_DATA_ID } from "../../shared/jarvis-events.mjs";
 const AFTER_RECORD: Record<string, (ctx: MutationCtx, row: Doc<"events">) => Promise<unknown>> = {
   "job-ok": onJobOk,
   "job-failed": onJobFailed,
-  "box-change": onBoxChange,
-  "digest-sent": onDigestSent,
-  "needs-you-posted": onNeedsYouPosted,
   [TODO_STATE]: onTodoState,
 };
 
