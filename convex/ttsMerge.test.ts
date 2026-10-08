@@ -1596,15 +1596,17 @@ describe("the gate posted as the tts-gate commit status", () => {
     });
   });
 
-  it("a refused audit posts failure and names the row", async () => {
-    const calls = statusesApi();
-    const t = convex();
-    await greenTests(t);
-    await recordAudit(t, "REFUSED");
-    await settle(t);
-    expect(calls.map((c) => c.body)).toEqual([
-      { state: "failure", description: "refused at a1b2c3d: audit-verdict REFUSED", context: "tts-gate" },
-    ]);
+  it("a rejecting audit posts failure and names the row, in its word and in the word of a row written before October 8", async () => {
+    for (const word of ["REJECTED", "REFUSED"]) {
+      const calls = statusesApi();
+      const t = convex();
+      await greenTests(t);
+      await recordAudit(t, word);
+      await settle(t);
+      expect(calls.map((c) => c.body)).toEqual([
+        { state: "failure", description: `rejected at a1b2c3d: audit-verdict ${word}`, context: "tts-gate" },
+      ]);
+    }
   });
 
   it("red tests post failure; a missing row posts pending naming it", async () => {
@@ -1615,7 +1617,7 @@ describe("the gate posted as the tts-gate commit status", () => {
     await recordAudit(t, "APPROVED");
     await settle(t);
     expect(calls.map((c) => c.body.state)).toEqual(["failure", "failure"]);
-    expect(calls[0].body.description).toBe("refused at a1b2c3d: tests-run red; waiting for audit-verdict");
+    expect(calls[0].body.description).toBe("rejected at a1b2c3d: tests-run red; waiting for audit-verdict");
 
     const t2 = convex();
     calls.length = 0;
