@@ -103,7 +103,7 @@ export { commitKey, mergeKey } from "./ttsShared";
  * ITS LINE, so a verdict quoted inside the prose ("do not write VERDICT:
  * APPROVED unless…") is not mistaken for the verdict.
  *
- * Answers the WORD, not a boolean: a refusal is then recorded as what it said
+ * Answers the WORD, not a boolean: a rejection is then recorded as what it said
  * rather than as a missing row, and the deny message can name it.
  */
 export function auditVerdictOf(text: string): string | null {
@@ -231,7 +231,7 @@ export function compactCount(n: unknown): string {
  * makes what it read legible afterwards, in the gate's own answer and therefore
  * in the digest's merge line, which joins these `why` strings.
  *
- * AN AUDIT THAT REFUSED AFTER 3 OF 12 CHUNKS IS AS INTERESTING AS ONE THAT
+ * AN AUDIT THAT REJECTED AFTER 3 OF 12 CHUNKS IS AS INTERESTING AS ONE THAT
  * APPROVED AFTER 12, so the clause rides the detail both arms carry, not the
  * approval arm.
  *
@@ -363,7 +363,7 @@ export async function mergeGateFor(
   const auditWhy = auditReason(auditData.text);
   // The audit's reason and HOW MUCH OF THE DIFF IT READ, in the one detail
   // clause both arms already carried. Appending to `auditDetail` rather than
-  // adding a second slot is what makes the coverage ride the refusal as well as
+  // adding a second slot is what makes the coverage ride the rejection as well as
   // the approval, and what keeps it out of the merge line's shape: that line
   // joins these `why` strings, so it gets the clause for free.
   //
@@ -472,10 +472,10 @@ type GateStatus = {
 
 /**
  * The gate's answer in GitHub's three words: `success` when it is open,
- * `failure` when a row it reads refused (the tests red, the audit answered
- * something other than APPROVED), `pending` while a row is missing. An
- * UNAVAILABLE audit is the absence of an audit (see internalRecordAudit), so it
- * waits rather than refuses.
+ * `failure` when a row it reads rejects the head (the tests red, the audit
+ * answered something other than APPROVED), `pending` while a row is missing.
+ * An UNAVAILABLE audit is the absence of an audit (see internalRecordAudit), so
+ * it waits rather than rejects.
  */
 async function gateStatusFor(
   ctx: QueryCtx | MutationCtx,
@@ -491,17 +491,17 @@ async function gateStatusFor(
       : `${TESTS_RUN} green, ${AUDIT_VERDICT} ${AUDIT_APPROVED}`;
     return { state: "success", description: cap(`open at ${short}: ${opened}`) };
   }
-  const refused: string[] = [];
+  const rejected: string[] = [];
   const waiting: string[] = [];
   for (const name of gate.missing) {
     if (name === "tests" && gate.testsRun !== null) {
-      refused.push(`${TESTS_RUN} red`);
+      rejected.push(`${TESTS_RUN} red`);
     } else if (name === "audit") {
       const audit = await rowFor(ctx, AUDIT_VERDICT, commitKey(repo, sha));
       const said = (audit?.data as { verdict?: unknown } | undefined)?.verdict;
       const word = typeof said === "string" ? said.toUpperCase() : null;
       if (audit !== null && word !== AUDIT_UNAVAILABLE) {
-        refused.push(`${AUDIT_VERDICT} ${word ?? "unreadable"}`);
+        rejected.push(`${AUDIT_VERDICT} ${word ?? "unreadable"}`);
       } else {
         waiting.push(AUDIT_VERDICT);
       }
@@ -510,10 +510,10 @@ async function gateStatusFor(
     }
   }
   const wait = waiting.length === 0 ? "" : `waiting for ${waiting.join(", ")}`;
-  return refused.length > 0
+  return rejected.length > 0
     ? {
         state: "failure",
-        description: cap(`refused at ${short}: ${refused.join(", ")}${wait === "" ? "" : `; ${wait}`}`),
+        description: cap(`rejected at ${short}: ${rejected.join(", ")}${wait === "" ? "" : `; ${wait}`}`),
       }
     : { state: "pending", description: cap(`${wait} at ${short}`) };
 }
@@ -884,7 +884,7 @@ type RecordTestsResult = { recorded: boolean; existing: boolean; ok: boolean; ru
 
 /**
  * The audit step's verdict and bounded, redacted answer, recorded once per
- * commit for the same reason: a refusal cannot be re-run until it approves.
+ * commit for the same reason: a rejection cannot be re-run until it approves.
  *
  * ONE EXCEPTION, and it is not a loophole: an UNAVAILABLE row is the ABSENCE
  * of an audit, not an audit — it says the auditor could not be reached at all
@@ -892,8 +892,9 @@ type RecordTestsResult = { recorded: boolean; existing: boolean; ok: boolean; ru
  * over that absence meant a head audited during a capped hour could NEVER
  * pass, because the only row it would ever have said "could not run". A later
  * REAL verdict therefore replaces it, in either direction: an Opus fallback
- * that approves opens the gate, and one that refuses shuts it just as firmly.
- * Any other existing verdict — APPROVED or REFUSED — still stands forever.
+ * that approves opens the gate, and one that rejects shuts it just as firmly.
+ * Any other existing verdict — APPROVED, or REJECTED (REFUSED in rows written
+ * before October 8, 2026) — still stands forever.
  *
  * The removal check's findings are read out of that same answer and filed
  * beside it. The gate is unchanged by them: they are read by whoever opens
