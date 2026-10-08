@@ -1099,6 +1099,47 @@ describe("POST /tts/audit — the second check's own door", () => {
     expect(await auditRows(unavailable)).toHaveLength(1);
   });
 
+  it("replaces an UNAVAILABLE row's text with a later UNAVAILABLE's, in the same row", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    await post(t, "/tts/audit", { repo: REPO, sha: SHA, text: "VERDICT: UNAVAILABLE\n\nCodex is at its weekly cap." });
+    const later = await (
+      await post(t, "/tts/audit", {
+        repo: REPO,
+        sha: SHA,
+        text: "VERDICT: UNAVAILABLE\n\nThe rung also failed. Its requests: 1. deepseek reasoning on on Nebius, 120.0 s, ran out.",
+        model: "deepseek/deepseek-v4-pro-0813",
+        fallback: "codex-cap",
+      })
+    ).json();
+    expect(later).toMatchObject({ existing: true, verdict: "UNAVAILABLE", replaced: true });
+    expect(await auditRows(t)).toHaveLength(1);
+    const data = await auditData(t);
+    expect(data.text).toContain("Its requests: 1. deepseek reasoning on on Nebius");
+    expect(data.model).toBe("deepseek/deepseek-v4-pro-0813");
+    expect(data.fallback).toBe("codex-cap");
+    // The earlier attempt's fields go with it: the second sent no chunks.
+    await post(t, "/tts/audit", {
+      repo: REPO,
+      sha: SHA,
+      text: "VERDICT: UNAVAILABLE\n\nread one of two parts",
+      chunks: { count: 2, read: 1, charsRead: 10, charsTotal: 20, truncatedChunks: 0, files: 2 },
+    });
+    expect((await auditData(t)).chunks).toMatchObject({ read: 1 });
+    await post(t, "/tts/audit", { repo: REPO, sha: SHA, text: "VERDICT: UNAVAILABLE\n\nCodex is at its weekly cap." });
+    expect(await auditData(t)).not.toHaveProperty("chunks");
+    expect(await auditRows(t)).toHaveLength(1);
+    await post(t, "/tts/audit", { repo: REPO, sha: SHA, text: "VERDICT: APPROVED\n\nfine" });
+    expect(await auditRows(t)).toHaveLength(2);
+    expect((await auditData(t)).verdict).toBe("APPROVED");
+    // A later UNAVAILABLE never touches the real verdict.
+    const late = await (await post(t, "/tts/audit", { repo: REPO, sha: SHA, text: "VERDICT: UNAVAILABLE\n\nCodex is at its weekly cap." })).json();
+    expect(late).toMatchObject({ existing: true, verdict: "APPROVED" });
+    expect(await auditRows(t)).toHaveLength(2);
+    expect((await auditData(t)).verdict).toBe("APPROVED");
+    expect((await auditData(t)).text).toContain("fine");
+  });
+
   it("says WHO audited when Codex was capped, in the gate, on the audit row and on the merge row the digest reads", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convex();
