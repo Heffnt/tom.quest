@@ -1019,6 +1019,15 @@ export const internalRecordAudit = internalMutation({
     // (above), leaving the failed attempt in the log.
     // Only an UNAVAILABLE row is replaced: the return above already keeps any
     // real verdict write-once, and this condition says so where it acts.
+    //
+    // THE WHOLE `data` IS REPLACED, ON PURPOSE. Every field describes one
+    // attempt: `chunks` is what that attempt read, `trace` its agent record,
+    // `removalNotes` its answer's notes. A field the later attempt did not
+    // send is a thing it did not do, so keeping the earlier attempt's value
+    // would describe a read that did not happen (AN ABSENT FIELD WRITES NO
+    // KEY, below, is the same rule for a new row). The row is patched rather
+    // than deleted and written again so it keeps its `at`, the time the
+    // head's audit first could not run, and its id.
     if (existing && recordedVerdict === AUDIT_UNAVAILABLE && verdict === AUDIT_UNAVAILABLE) {
       await ctx.db.patch(existing._id, {
         data: {
