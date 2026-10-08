@@ -116,10 +116,11 @@ export const createTodo = mutation({
   },
 });
 
-/** What a write that changes a todo's dueAt also writes: the rollover's mark
- *  for the old date no longer holds (schema todos.rolledOverDueAt), so the
- *  5 a.m. rollover reads the row again once its new date passes. Every write
- *  of dueAt carries it. */
+/** What a write that changes a todo's dueAt also writes: it clears the
+ *  5 a.m. missed rollover's mark (schema todos.rolledOverDueAt). That rollover
+ *  ran inside the digest code and went with the digest (tom.quest 392);
+ *  nothing writes the mark now, so this only clears marks older rows still
+ *  carry, until the table sweep clears them and the field goes. */
 export const DATE_MOVED = { rolledOverDueAt: undefined } as const;
 
 // The ONE place an open date resolves as kept when an item completes — called

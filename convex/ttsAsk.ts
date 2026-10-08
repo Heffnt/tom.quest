@@ -88,7 +88,7 @@ function capFor(args: { sessionId?: string }): number {
 }
 
 /** The reason a capped ask carries: the caller took its own fallback. */
-const CAP_REFUSAL = "cap: the delegate ask cap for this caller is spent, so the agent took its own fallback";
+export const CAP_REFUSAL = "cap: the delegate ask cap for this caller is spent, so the agent took its own fallback";
 
 /** An ask as its delegate-decision row stores it (the fields the decision
  *  row reads), with what only the decision row carries when the caller sent

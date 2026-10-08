@@ -395,6 +395,12 @@ export default defineSchema({
   dtsTodos: defineTable({
     statement: v.string(),
     body: v.optional(v.string()),
+    // RETIRED with Slack and the digest (tom.quest 392): the morning message
+    // and the hourly line that read it are gone and nothing writes it. It
+    // stays declared until the rows that carry it are cleared (the table
+    // sweep that follows the removals), because convex deploy refuses a
+    // stored field the schema does not declare.
+    needsTomToday: v.optional(v.object({ why: v.string() })),
     // NARROWED (the lifeos update, phase 7): two values, unprepared |
     // prepared. The retired spellings were mapped by
     // ttsMigrations.internalMigrateReadiness and verified gone on prod
@@ -435,7 +441,8 @@ export default defineSchema({
     ),
     // The plain table's rollover mark (todos.rolledOverDueAt), declared here
     // so jarvis/tables.ts copyBack, which copies every field, can copy a row
-    // that carries it. Nothing reads it on this table.
+    // that carries it. Nothing reads it on this table, and the rollover that
+    // wrote it went with the digest (tom.quest 392).
     rolledOverDueAt: v.optional(v.number()),
     // THE GOAL CONDITION — on a `kind: "goal"` row this is the checkable
     // sentence about the world that says the goal is met ("the lease is
@@ -476,6 +483,15 @@ export default defineSchema({
     // (worker/jobs/poll-canvas.mjs), never one shared name.
     source: v.string(),
     provenance: v.optional(v.string()), // link/descriptor of where it came from
+    // RETIRED with Slack and the digest (tom.quest 392): the #dump capture
+    // and its one threaded reply are gone and nothing writes these four. They
+    // stay declared until the rows that carry them are cleared (the table
+    // sweep that follows the removals), because convex deploy refuses a
+    // stored field the schema does not declare.
+    slackChannel: v.optional(v.string()),
+    slackTs: v.optional(v.string()),
+    slackReplyTs: v.optional(v.string()),
+    slackRepliedAt: v.optional(v.number()),
     workDescription: v.optional(v.string()), // qualitative, never a numeric estimate (spec §5.3)
     entryAction: v.optional(v.string()), // the one-click smallest next action (spec §13)
     brief: v.optional(v.string()), // ground-up brief, markdown
@@ -556,12 +572,11 @@ export default defineSchema({
   })
     .index("by_status", ["status", "updatedAt"])
     .index("by_updatedAt", ["updatedAt"])
-    // The dated reads: the 5 a.m. missed rollover ("active rows whose date is
-    // before the new day") and a bounded due-date reader ("active rows due by
-    // the end of today"). Both used to scan every active row, or
-    // the whole table, and filter in code. Undated rows sort BEFORE every
-    // number in the index, so a range starting at gte("dueAt", 0) reads the
-    // dated ones only.
+    // The dated read: one status's rows by due date, so the open-todos
+    // reader (convex/jarvis/todos.ts open) takes the soonest due first
+    // without scanning the table. Undated rows sort BEFORE every number in
+    // the index, so a range starting at gte("dueAt", 0) reads the dated ones
+    // only, and eq("dueAt", undefined) reads the undated ones.
     .index("by_status_and_due", ["status", "dueAt"])
     .index("by_readiness", ["readiness"])
     // Ingestion lookups: the Canvas ASSIGNMENT sync and the repeating-todo
@@ -578,6 +593,12 @@ export default defineSchema({
   todos: defineTable({
     statement: v.string(),
     body: v.optional(v.string()),
+    // RETIRED with Slack and the digest (tom.quest 392): the morning message
+    // and the hourly line that read it are gone and nothing writes it. It
+    // stays declared until the rows that carry it are cleared (the table
+    // sweep that follows the removals), because convex deploy refuses a
+    // stored field the schema does not declare.
+    needsTomToday: v.optional(v.object({ why: v.string() })),
     // NARROWED (the lifeos update, phase 7): two values, unprepared |
     // prepared. The retired spellings were mapped by
     // ttsMigrations.internalMigrateReadiness and verified gone on prod
@@ -616,13 +637,11 @@ export default defineSchema({
         }),
       ),
     ),
-    // THE ROLLOVER'S MARK: the date the 5 a.m. missed rollover last settled
-    // this todo for, by marking it missed or finding an outcome already
-    // recorded for that date. The rollover
-    // reads only active past-dated rows without it (by_status_rollover_due),
-    // so rows it settled on earlier mornings never use up its read budget.
-    // Every write that changes dueAt clears it (convex/tts.ts DATE_MOVED), so
-    // a new date that passes is rolled again.
+    // The date the 5 a.m. missed rollover last settled this todo for. That
+    // rollover ran inside the digest code and went with the digest (tom.quest
+    // 392); nothing writes this field now. The writes that change dueAt still
+    // clear it (convex/tts.ts DATE_MOVED). It stays declared because rows
+    // carry it (stored data), until those rows are cleared.
     rolledOverDueAt: v.optional(v.number()),
     // THE GOAL CONDITION — on a `kind: "goal"` row this is the checkable
     // sentence about the world that says the goal is met ("the lease is
@@ -663,6 +682,15 @@ export default defineSchema({
     // (worker/jobs/poll-canvas.mjs), never one shared name.
     source: v.string(),
     provenance: v.optional(v.string()), // link/descriptor of where it came from
+    // RETIRED with Slack and the digest (tom.quest 392): the #dump capture
+    // and its one threaded reply are gone and nothing writes these four. They
+    // stay declared until the rows that carry them are cleared (the table
+    // sweep that follows the removals), because convex deploy refuses a
+    // stored field the schema does not declare.
+    slackChannel: v.optional(v.string()),
+    slackTs: v.optional(v.string()),
+    slackReplyTs: v.optional(v.string()),
+    slackRepliedAt: v.optional(v.number()),
     threadMessageId: v.optional(v.string()), // the Jarvis-thread message this todo came from; the capture dedupes on it
     workDescription: v.optional(v.string()), // qualitative, never a numeric estimate (spec §5.3)
     entryAction: v.optional(v.string()), // the one-click smallest next action (spec §13)
@@ -762,17 +790,12 @@ export default defineSchema({
   })
     .index("by_status", ["status", "updatedAt"])
     .index("by_updatedAt", ["updatedAt"])
-    // The dated reads: the 5 a.m. missed rollover ("active rows whose date is
-    // before the new day") and a bounded due-date reader ("active rows due by
-    // the end of today"). Both used to scan every active row, or
-    // the whole table, and filter in code. Undated rows sort BEFORE every
-    // number in the index, so a range starting at gte("dueAt", 0) reads the
-    // dated ones only.
+    // The dated read: one status's rows by due date, so the open-todos
+    // reader (convex/jarvis/todos.ts open) takes the soonest due first
+    // without scanning the table. Undated rows sort BEFORE every number in
+    // the index, so a range starting at gte("dueAt", 0) reads the dated ones
+    // only, and eq("dueAt", undefined) reads the undated ones.
     .index("by_status_and_due", ["status", "dueAt"])
-    // The missed rollover's read: active rows it has not settled for their
-    // current date (no rolledOverDueAt), by date. A missing field indexes as
-    // undefined, so eq("rolledOverDueAt", undefined) is the unsettled range.
-    .index("by_status_rollover_due", ["status", "rolledOverDueAt", "dueAt"])
     .index("by_readiness", ["readiness"])
     .index("by_batch", ["batchId"])
     // Ingestion lookups: the Canvas ASSIGNMENT sync and the repeating-todo
@@ -1586,7 +1609,11 @@ export default defineSchema({
   // channels, so this is deliberately not a mutable field on runs.
   runLabels: defineTable({
     runId: v.string(), rowSpan: v.optional(v.object({ seqStart: v.number(), seqEnd: v.number() })),
-    source: v.union(v.literal("ruling"), v.literal("objection"), v.literal("session-reply")),
+    // "digest-reaction" is RETIRED with Slack and the digest (tom.quest 392):
+    // nothing writes it. It stays in the union until the rows that carry it
+    // are cleared (the table sweep that follows the removals), because convex
+    // deploy refuses a stored value outside the union.
+    source: v.union(v.literal("ruling"), v.literal("objection"), v.literal("session-reply"), v.literal("digest-reaction")),
     // Always "tom". The writer refuses any other value: a label is what TOM
     // did about a run's output, and an agent writing a label about another
     // agent's output would put an unreviewed verdict into the corpus the
