@@ -1017,7 +1017,9 @@ export const internalRecordAudit = internalMutation({
     // audit's fallback was fixed the reason a later audit still failed was in
     // no place anyone could read. A real verdict still lands as a new row
     // (above), leaving the failed attempt in the log.
-    if (existing && verdict === AUDIT_UNAVAILABLE) {
+    // Only an UNAVAILABLE row is replaced: the return above already keeps any
+    // real verdict write-once, and this condition says so where it acts.
+    if (existing && recordedVerdict === AUDIT_UNAVAILABLE && verdict === AUDIT_UNAVAILABLE) {
       await ctx.db.patch(existing._id, {
         data: {
           ...args,

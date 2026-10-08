@@ -1121,6 +1121,12 @@ describe("POST /tts/audit — the second check's own door", () => {
     await post(t, "/tts/audit", { repo: REPO, sha: SHA, text: "VERDICT: APPROVED\n\nfine" });
     expect(await auditRows(t)).toHaveLength(2);
     expect((await auditData(t)).verdict).toBe("APPROVED");
+    // A later UNAVAILABLE never touches the real verdict.
+    const late = await (await post(t, "/tts/audit", { repo: REPO, sha: SHA, text: "VERDICT: UNAVAILABLE\n\nCodex is at its weekly cap." })).json();
+    expect(late).toMatchObject({ existing: true, verdict: "APPROVED" });
+    expect(await auditRows(t)).toHaveLength(2);
+    expect((await auditData(t)).verdict).toBe("APPROVED");
+    expect((await auditData(t)).text).toContain("fine");
   });
 
   it("says WHO audited when Codex was capped, in the gate, on the audit row and on the merge row the digest reads", async () => {
