@@ -22,8 +22,8 @@
 //   - assertBoxChange, the write-time shape check;
 //   - forAgent, the /agents chat's read of one agent's changes;
 //   - boxChangeLines, the history page's facts: one line per agent
-//     that ran root commands, one per deploy and per setup run, and one per
-//     other kind of change.
+//     that ran root commands, one per deploy and per setup run, one per
+//     journal gap, and one per other kind of change.
 //
 // The command text arrives redacted by the box (its shape pass and its
 // exact-value pass). Every reader here runs it through redactSecrets again,
@@ -193,6 +193,16 @@ export function boxChangeLines(
     byItem.set(what, [...(byItem.get(what) ?? []), change]);
   }
   for (const [what, items] of byItem) {
+    if (what === "journal-gap") {
+      for (const gap of items) {
+        facts.push({
+          id: `box:journal-gap:${gap.at}`,
+          text: `The journal lost entries the reader had not read${gap.change?.before ? `, from ${gap.change.before}` : ""}${gap.change?.after ? ` to ${gap.change.after}` : ""}; the record has a gap there.`,
+          url: AGENTS_WINDOW_URL,
+        });
+      }
+      continue;
+    }
     const last = items[items.length - 1];
     const now = last.change?.after ? `: ${oneLine(last.change.after, 100)}` : "";
     facts.push({ id: `box:state:${what}`, text: `The ${ITEM_WORDS[what] ?? what} changed${items.length > 1 ? ` ${items.length} times` : ""}${now}.`, url: AGENTS_WINDOW_URL });
