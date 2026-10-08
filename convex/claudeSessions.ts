@@ -433,7 +433,6 @@ const SESSION_KIND = v.union(
   v.literal("adhoc"),
   v.literal("block"),
   v.literal("therapy"),
-  v.literal("persistent"),
 );
 
 /**
@@ -815,6 +814,8 @@ export const internalTranscriptPage = internalQuery({
 // two doors can never resolve repos or seed the row differently.
 const CREATE_SESSION_ARGS = {
   title: v.string(),
+  // Every kind but "persistent": the five persistent sessions are made by
+  // their setup pen alone (internalEnsurePersistentSessions), one row per name.
   kind: SESSION_KIND,
   // The live argument: the repos this session checks out. `repo` is the
   // pre-ruling single-string form, still accepted so an older client (or a
@@ -902,6 +903,62 @@ export const createSession = mutation({
 export const internalCreateSession = internalMutation({
   args: CREATE_SESSION_ARGS,
   handler: async (ctx, args) => await createSessionFrom(ctx, args),
+});
+
+// The persistent sessions' setup pen (design section 4.1), run from the
+// Jarvis Box with the Convex CLI (Jarvis scripts/persistent-sessions.mjs).
+// One row per name in PERSISTENT_ORDER, kind "persistent", titled by the
+// name: an idle session on no repository with NO opener, so its transcript
+// starts with the first message Tom (or the clock) sends, and its prompt is
+// the Jarvis type file the session host appends on every reply.
+//
+// REMOVAL CHECK on reusing a row that exists: the pen is run again on
+// purpose, to move all five rows to the other login (Tom's ruling of October
+// 6: gmail until the wpi weekly reset, wpi after it), and a second run that
+// inserted would leave two sessions of one name, two transcripts, on the
+// page. So a name with a row keeps it, and a given `login` is written onto
+// it, which is the whole reason for that run.
+export const internalEnsurePersistentSessions = internalMutation({
+  args: { login: v.optional(SESSION_LOGIN) },
+  handler: async (ctx, { login }) => {
+    const now = Date.now();
+    // Bounded at five: this pen is the only writer of the kind (the create
+    // form and the fork refuse it, rename refuses a persistent session), and
+    // it makes one row per name.
+    const existing = await ctx.db
+      .query("claudeSessions")
+      .withIndex("by_kind_agenda_day", (q) => q.eq("kind", "persistent"))
+      .collect();
+    const out: { name: string; id: Id<"claudeSessions">; created: boolean; status: string; login: string | null }[] = [];
+    for (const name of PERSISTENT_ORDER) {
+      const row = existing.find((session) => session.title === name);
+      if (row) {
+        if (login !== undefined) await ctx.db.patch(row._id, { login });
+        out.push({ name, id: row._id, created: false, status: row.status, login: login ?? row.login ?? null });
+        continue;
+      }
+      const id = await ctx.db.insert("claudeSessions", {
+        title: name,
+        kind: "persistent",
+        repos: [],
+        repo: NO_REPO,
+        mode: "interactive",
+        // Opus, not the default session model: every session Tom talks
+        // with runs on Opus at least (his rule of October 6), and the host
+        // passes the explicit Opus id for this kind (Jarvis
+        // worker/session-host/persistent.mjs).
+        model: "opus",
+        ...(login !== undefined ? { login } : {}),
+        status: "idle",
+        statusChangedAt: now,
+        nextSeq: 0,
+        createdAt: now,
+      });
+      await logEvent(ctx, "session-created", undefined, { sessionId: id, title: name, kind: "persistent", mode: "interactive", repos: [] });
+      out.push({ name, id, created: true, status: "idle", login: login ?? null });
+    }
+    return out;
+  },
 });
 
 // The Friday job's pen (POST /tts/session; the lifeos update, phase 8). Kind
@@ -1011,6 +1068,12 @@ function outcomePenFooter(
 // Re-entry (spec §9: an ended session accepts a follow-up turn and continues
 // with context intact). Before this, an ending was a dead end — the only way
 // back to a finished conversation was a NEW session with none of its context.
+// Who wrote a turn: Tom, or an agent writing through a pen. Declared here,
+// above the two doors that take it (reopen and send-message), because a
+// mutation's args are read as the module loads.
+const TURN_AUTHOR = v.union(v.literal("tom"), v.literal("agent"));
+type TurnAuthor = Infer<typeof TURN_AUTHOR>;
+
 const REOPEN_SESSION_ARGS = {
   sessionId: v.id("claudeSessions"),
   text: v.string(),
@@ -1092,18 +1155,27 @@ export const reopenSession = mutation({
   },
 });
 
+// The author is "agent" unless the caller names Tom: ttsSlack's thread reply
+// does, because the events route verified the reply came from him, and only a
+// "tom" turn can become a ruling in his words.
 export const internalReopenSession = internalMutation({
-  args: REOPEN_SESSION_ARGS,
-  handler: async (ctx, args) => await reopenSessionFrom(ctx, args, "agent"),
+  args: { ...REOPEN_SESSION_ARGS, author: v.optional(TURN_AUTHOR) },
+  handler: async (ctx, { author, ...args }) => await reopenSessionFrom(ctx, args, author ?? "agent"),
 });
 
 // Retitling is pure labelling — the title is Tom's handle on a session in the
-// list, and nothing downstream keys off it.
+// list, and nothing downstream keys off it — except for a persistent
+// session, whose title is its name (below).
 export const renameSession = mutation({
   args: { sessionId: v.id("claudeSessions"), title: v.string() },
   handler: async (ctx, { sessionId, title }) => {
     await requireTomId(ctx);
-    await getSessionOrThrow(ctx, sessionId);
+    const session = await getSessionOrThrow(ctx, sessionId);
+    // REMOVAL CHECK: a persistent session's title is its name, which the
+    // Jarvis host picks its type file by and the setup pen finds its row by;
+    // a renamed one would run with no type file and the pen's next run would
+    // make a second row of the name. Rename stays for every other session.
+    if (session.kind === "persistent") throw new Error(`"${session.title}" is a persistent session; its name is fixed`);
     const trimmed = title.trim();
     if (trimmed === "") throw new Error("Title is empty");
     await ctx.db.patch(sessionId, { title: trimmed });
@@ -1204,6 +1276,13 @@ async function forkSessionAsFrom(
   },
 ): Promise<Id<"claudeSessions">> {
   const session = await getSessionOrThrow(ctx, sessionId);
+  // A persistent session keeps one model family: a fork is a second row, a
+  // second transcript, under the same name. A model change within the
+  // family (setSessionModel) is the way to change its model.
+  // REMOVAL CHECK: the session header offers a persistent session only its
+  // own family's models, but this body is also internalForkSessionAs, which
+  // a box agent reaches through the Convex CLI with no page in front of it.
+  if (session.kind === "persistent") throw new Error(`"${session.title}" is a persistent session; change its model within its family instead of forking it`);
   if (text.trim() === "") throw new Error("Message is empty");
   const now = Date.now();
   // The fork inherits the whole SUBJECT of the old session — its repos, the
@@ -1274,8 +1353,8 @@ export const internalForkSessionAs = internalMutation({
 // events route verified came from TOM_SLACK_USER_ID and passes "tom". Only a
 // "tom" turn can become a ruling in his words (ruling 15,
 // ttsRulings.internalRecordRulingFromTomWords).
-const TURN_AUTHOR = v.union(v.literal("tom"), v.literal("agent"));
-type TurnAuthor = Infer<typeof TURN_AUTHOR>;
+// TURN_AUTHOR and TurnAuthor are declared with the reopen door above, which
+// takes an author too.
 
 const SEND_MESSAGE_ARGS = {
   sessionId: v.id("claudeSessions"),

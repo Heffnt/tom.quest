@@ -2292,3 +2292,46 @@ describe("the sessions page's record", () => {
     expect((await tom.query(api.claudeSessions.sessionByLink, { id: sessionId }))?._id).toBe(sessionId);
   });
 });
+
+describe("the persistent sessions' setup pen", () => {
+  const NAMES = ["dump", "briefer", "builder", "observer", "todo"];
+
+  it("creates the five idle rows with no opener, and a rerun creates none", async () => {
+    const t = convexTest({ schema, modules });
+    const first = await t.mutation(internal.claudeSessions.internalEnsurePersistentSessions, {});
+    expect(first.map((r) => [r.name, r.created, r.status, r.login])).toEqual(NAMES.map((n) => [n, true, "idle", null]));
+    const again = await t.mutation(internal.claudeSessions.internalEnsurePersistentSessions, {});
+    expect(again.map((r) => r.created)).toEqual(NAMES.map(() => false));
+    expect(again.map((r) => r.id)).toEqual(first.map((r) => r.id));
+    const rows = await t.run(async (ctx) => await ctx.db.query("claudeSessions").collect());
+    expect(rows.map((r) => [r.title, r.kind, r.status, r.model, r.repo, r.login]))
+      .toEqual(NAMES.map((n) => [n, "persistent", "idle", "opus", "none", undefined]));
+    // No opener: the transcript starts with the first message sent to it.
+    const inbound = await t.run(async (ctx) => await ctx.db.query("claudeInbound").collect());
+    expect(inbound).toEqual([]);
+  });
+
+  it("writes a given login onto every row, new or existing, and the poll hands the host the kind, title and login", async () => {
+    const t = convexTest({ schema, modules });
+    await t.mutation(internal.claudeSessions.internalEnsurePersistentSessions, {});
+    const set = await t.mutation(internal.claudeSessions.internalEnsurePersistentSessions, { login: "gmail" });
+    expect(set.map((r) => [r.name, r.created, r.login])).toEqual(NAMES.map((n) => [n, false, "gmail"]));
+    const poll = await t.mutation(internal.claudeSessions.internalPoll, { version: "test", daemonStartedAt: 1, load: HEALTHY_LOAD });
+    const listed = (poll.sessions as { title: string; kind: string; login?: string }[]).map((s) => [s.title, s.kind, s.login]).sort();
+    expect(listed).toEqual([...NAMES].sort().map((n) => [n, "persistent", "gmail"]));
+  });
+});
+
+describe("a persistent session's name", () => {
+  it("cannot be renamed, forked across families, or opened from the create form", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const [todo] = (await t.mutation(internal.claudeSessions.internalEnsurePersistentSessions, {})).filter((r) => r.name === "todo");
+    await expect(tom.mutation(api.claudeSessions.renameSession, { sessionId: todo.id, title: "chores" })).rejects.toThrow(/name is fixed/);
+    await expect(tom.mutation(api.claudeSessions.forkSessionAs, { sessionId: todo.id, model: "gpt-5.6-sol", text: "go on" })).rejects.toThrow(/persistent session/);
+    // @ts-expect-error the create form's kinds leave persistent out
+    await expect(tom.mutation(api.claudeSessions.createSession, { title: "todo", kind: "persistent", model: "opus", initialPrompt: "hi" })).rejects.toThrow();
+    const rows = await t.run(async (ctx) => await ctx.db.query("claudeSessions").collect());
+    expect(rows.filter((r) => r.title === "todo")).toHaveLength(1);
+  });
+});

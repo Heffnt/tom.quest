@@ -610,6 +610,26 @@ describe("threaded replies from Tom", () => {
     expect(await scheduledSends(t)).toHaveLength(0);
   });
 
+  it("an ended persistent session is reopened as the same row, and Tom's reply is the turn in his name", async () => {
+    slackEnv();
+    const t = convexTest(schema, modules);
+    await publishSessionPrelude(t);
+    const rows = await t.mutation(internal.claudeSessions.internalEnsurePersistentSessions, {});
+    const todoId = rows.find((r) => r.name === "todo")!.id as Id<"claudeSessions">;
+    await t.run(async (ctx) => ctx.db.patch(todoId, { status: "ended", outcomeSummary: "done for the day" }));
+    await posted(t, "310.1", { kind: "session", id: todoId }, "session finished: done for the day");
+    const result = await postEvent(t, { channel: TTS, ts: "310.2", thread_ts: "310.1", text: "add milk to the list" });
+    expect(result).toMatchObject({ outcome: "session-turn", sessionId: todoId });
+    const session = await t.run(async (ctx) => ctx.db.get(todoId));
+    expect(session).toMatchObject({ status: "idle", kind: "persistent", title: "todo" });
+    // The turn is his: the route verified the Slack user, so a ruling in his
+    // words may cite this row (the audit of 06361ff found it written as "agent").
+    const inbound = await t.run(async (ctx) =>
+      ctx.db.query("claudeInbound").withIndex("by_session_status", (q) => q.eq("sessionId", todoId).eq("status", "pending")).collect(),
+    );
+    expect(inbound.map((row) => [row.text, row.author])).toEqual([["add milk to the list", "tom"]]);
+  });
+
   it("an ended session gets a new session of the same kind seeded with the thread, and the thread is told", async () => {
     slackEnv();
     const t = convexTest(schema, modules);

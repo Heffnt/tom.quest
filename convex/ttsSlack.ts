@@ -1064,6 +1064,12 @@ async function sessionReply(
     });
     return { outcome: "session-turn", sessionId };
   }
+  // An ended persistent session is reopened, never continued as a new row:
+  // its name is one row (claudeSessions.internalEnsurePersistentSessions).
+  if (session.kind === "persistent") {
+    await ctx.runMutation(internal.claudeSessions.internalReopenSession, { sessionId, text, author: "tom" });
+    return { outcome: "session-turn", sessionId };
+  }
   const newId = await ctx.runMutation(
     internal.claudeSessions.internalCreateSession,
     {
