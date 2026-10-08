@@ -1,6 +1,8 @@
 // The vocabulary rows, pinned to what the box's `tts-search` printed on
 // 2026-09-25. Each expected string below is the CLI's own output, copied, and
-// each input is that CLI's `--json` for the same word. The definitions are the
+// each input is that CLI's `--json` for the same word, except the ruling's
+// definition, which drops the code-brief clause the record no longer holds
+// (the spec and the vocabulary still print it until they are regenerated). The definitions are the
 // spec's (WikiTom tts/spec.md §12.1), not his model-of-tom pages.
 
 import { describe, expect, it } from "vitest";

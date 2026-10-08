@@ -1,7 +1,7 @@
 // THE RECORD'S CONTEXT FIXTURE. convex/ttsContext.test.ts assembles a run's
-// context from a seeded publication in convex-test.
-// seeds the same pages. The Jarvis repository's scripts/prelude.test.mjs keeps
-// its own copy of these pages; nothing holds the two copies equal.
+// context from a seeded publication in convex-test. The Jarvis repository's
+// scripts/prelude.test.mjs keeps its own copy of these pages; nothing holds
+// the two copies equal.
 //
 // WHAT IS HERE IS INPUT. The tests write every expected prompt out by hand.
 
