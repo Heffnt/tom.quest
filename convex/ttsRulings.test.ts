@@ -95,6 +95,19 @@ async function withTom(t: ReturnType<typeof convexTest>) {
 
 
 describe("TTS unified rulings", () => {
+  // A code-todo ruling as the record held it before the code mirror was
+  // removed. Every pen now refuses a code subject that is not a change
+  // (insertRuling), so a pending code-todo ruling exists only as such a row;
+  // these tests read what the record does with one.
+  let seeded = 0;
+  const seedCodeRuling = (
+    t: ReturnType<typeof testDb>,
+    row: { externalId: string; verdict: "approve" | "revise" | "session" | "archive"; sentence?: string },
+  ) =>
+    t.run(async (ctx) =>
+      ctx.db.insert("rulings", { subjectType: "code", repo: "tom.quest", ruledAt: Date.now() + (seeded += 1), ...row }),
+    );
+
   // witness: remove the requireTom call from listRulings or recordRuling in
   // convex/ttsRulings.ts
   it("gates every Tom-facing function on the tom role", async () => {
@@ -157,7 +170,7 @@ describe("TTS unified rulings", () => {
     await expect(
       tom.mutation(api.ttsRulings.recordRuling, {
         repo: "tom.quest",
-        externalId: "cmt-001",
+        externalId: "pr-12",
         verdict: "revise",
       }),
     ).rejects.toThrow(/sentence/);
@@ -165,7 +178,7 @@ describe("TTS unified rulings", () => {
     await expect(
       tom.mutation(api.ttsRulings.recordRuling, {
         repo: "tom.quest",
-        externalId: "cmt-001",
+        externalId: "pr-12",
         verdict: "revise",
         sentence: "   ",
       }),
@@ -224,7 +237,7 @@ describe("TTS unified rulings", () => {
     expect(ruling.applyResult).toBe("status archived");
   });
 
-  it("session (life) and approve (code) leave appliedAt unset", async () => {
+  it("session (life) leaves appliedAt unset; a ruling on a code todo is refused at every pen", async () => {
     const t = testDb();
     const tom = await withTom(t);
     const todoId = await tom.mutation(api.tts.createTodo, { statement: "talk" });
@@ -232,15 +245,16 @@ describe("TTS unified rulings", () => {
       todoId,
       verdict: "session",
     });
-    await tom.mutation(api.ttsRulings.recordRuling, {
-      repo: "tom.quest",
-      externalId: "cmt-001",
-      verdict: "approve",
-    });
+    await expect(
+      tom.mutation(api.ttsRulings.recordRuling, { repo: "tom.quest", externalId: "cmt-001", verdict: "approve" }),
+    ).rejects.toThrow(/is not a change/);
+    await expect(
+      t.mutation(internal.ttsRulings.internalRecordRuling, { repo: "tom.quest", externalId: "cmt-001", verdict: "approve" }),
+    ).rejects.toThrow(/is not a change/);
     const rulings = await tom.query(api.ttsRulings.listRulings, {});
-    expect(rulings).toHaveLength(2);
-    expect(rulings.every((r) => r.appliedAt === undefined)).toBe(true);
-    expect(rulings.every((r) => r.applyResult === undefined)).toBe(true);
+    expect(rulings).toHaveLength(1);
+    expect(rulings[0].appliedAt).toBeUndefined();
+    expect(rulings[0].applyResult).toBeUndefined();
   });
 
   // ── Every verdict's effect at write time (the lifeos update, phase 7: there
@@ -288,11 +302,10 @@ describe("TTS unified rulings", () => {
   it("code: revise waits for the planner's brief pass; session applies when the code block session opens; approve and archive wait for the scheduler", async () => {
     const t = testDb();
     const tom = await withTom(t);
-    const code = (externalId: string) => ({ repo: "tom.quest", externalId });
-    await tom.mutation(api.ttsRulings.recordRuling, { ...code("c-revise"), verdict: "revise", sentence: "again" });
-    await tom.mutation(api.ttsRulings.recordRuling, { ...code("c-session"), verdict: "session" });
-    await tom.mutation(api.ttsRulings.recordRuling, { ...code("c-approve"), verdict: "approve" });
-    await tom.mutation(api.ttsRulings.recordRuling, { ...code("c-archive"), verdict: "archive" });
+    await seedCodeRuling(t, { externalId: "c-revise", verdict: "revise", sentence: "again" });
+    await seedCodeRuling(t, { externalId: "c-session", verdict: "session" });
+    await seedCodeRuling(t, { externalId: "c-approve", verdict: "approve" });
+    await seedCodeRuling(t, { externalId: "c-archive", verdict: "archive" });
     let pending = await t.query(internal.ttsRulings.internalPendingRulings, {});
     expect(pending.map((r) => r.externalId).sort()).toEqual(
       ["c-approve", "c-archive", "c-revise", "c-session"],
@@ -334,14 +347,13 @@ describe("TTS unified rulings", () => {
   it("the code block session names every code session verdict it consumes, with Tom's sentence, and consumes only those", async () => {
     const t = testDb();
     const tom = await withTom(t);
-    const code = (externalId: string) => ({ repo: "tom.quest", externalId });
     // Two live session verdicts, one with a note; one superseded by a newer
     // approve; one already applied by an earlier block session.
-    await tom.mutation(api.ttsRulings.recordRuling, { ...code("c-one"), verdict: "session", sentence: "talk me through the flag" });
-    await tom.mutation(api.ttsRulings.recordRuling, { ...code("c-two"), verdict: "session" });
-    await tom.mutation(api.ttsRulings.recordRuling, { ...code("c-old"), verdict: "session" });
-    await tom.mutation(api.ttsRulings.recordRuling, { ...code("c-old"), verdict: "approve" });
-    const doneId = await tom.mutation(api.ttsRulings.recordRuling, { ...code("c-done"), verdict: "session" });
+    await seedCodeRuling(t, { externalId: "c-one", verdict: "session", sentence: "talk me through the flag" });
+    await seedCodeRuling(t, { externalId: "c-two", verdict: "session" });
+    await seedCodeRuling(t, { externalId: "c-old", verdict: "session" });
+    await seedCodeRuling(t, { externalId: "c-old", verdict: "approve" });
+    const doneId = await seedCodeRuling(t, { externalId: "c-done", verdict: "session" });
     await t.run(async (ctx) => {
       // Rulings on one subject must order by ruledAt; the fake clock can
       // give the two c-old rows the same millisecond.
@@ -523,11 +535,7 @@ describe("TTS unified rulings", () => {
   it("marks a ruling applied and rejects a bad id by name", async () => {
     const t = testDb();
     const tom = await withTom(t);
-    const id = await tom.mutation(api.ttsRulings.recordRuling, {
-      repo: "tom.quest",
-      externalId: "tq-004",
-      verdict: "approve",
-    });
+    const id = await seedCodeRuling(t, { externalId: "tq-004", verdict: "approve" });
     await t.mutation(internal.ttsRulings.internalMarkRulingApplied, {
       id,
       result: "https://github.com/Heffnt/tom.quest/pull/99",
@@ -551,16 +559,8 @@ describe("TTS unified rulings", () => {
   it("consumes only a pending ruling: never an applied or superseded one", async () => {
     const t = testDb();
     const tom = await withTom(t);
-    const older = await tom.mutation(api.ttsRulings.recordRuling, {
-      repo: "tom.quest",
-      externalId: "tq-005",
-      verdict: "approve",
-    });
-    const newer = await tom.mutation(api.ttsRulings.recordRuling, {
-      repo: "tom.quest",
-      externalId: "tq-005",
-      verdict: "archive",
-    });
+    const older = await seedCodeRuling(t, { externalId: "tq-005", verdict: "approve" });
+    const newer = await seedCodeRuling(t, { externalId: "tq-005", verdict: "archive" });
     await expect(
       t.mutation(internal.ttsRulings.internalMarkRulingApplied, { id: older, result: "late" }),
     ).rejects.toThrow(/superseded/);

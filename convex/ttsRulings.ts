@@ -150,6 +150,16 @@ export async function insertRuling(
     if (isCode && (repo === undefined || externalId === undefined)) {
       throw new Error("A code ruling requires both repo and externalId");
     }
+    // A code ruling names a change (a pull request or a commit,
+    // isChangeSubject), which convex/observeMerge.ts reads to land it. A code
+    // todo is no longer mirrored, so a ruling on one would be recorded and
+    // stay pending with nothing to act on it. One check for every pen: the
+    // page's buttons, the session CLI pen and the ruling from Tom's words.
+    if (isCode && !isChangeSubject(externalId!)) {
+      throw new Error(
+        `refused: ${repo} ${externalId} is not a change (a pull request or a commit); code todos are no longer mirrored, so a code ruling names a change`,
+      );
+    }
     // One optional written note on EVERY verdict (ratified 2026-08-29): the
     // four verdicts are uniform, each taking an optional note. Its MEANING is
     // per-verdict and unchanged — revise: the redirect (still required);
