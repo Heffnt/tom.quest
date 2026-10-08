@@ -290,7 +290,7 @@ export const READ_BYTES = {
   surfacedMarks: 0.125 * MIB,
   deploys: 0.125 * MIB,
   boxChanges: 0.5 * MIB,
-  runs: 1.875 * MIB,
+  runs: 2 * MIB,
 } as const;
 
 /** The most one digest's transaction reads (GATHER_BYTES above); the tests
