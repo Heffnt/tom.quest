@@ -119,6 +119,8 @@ went 40 to 37 over the same three.
 | fields on `batches` | 10 | **9** |
 | fields on `dtsCodeBriefs` | 9 | **8** |
 
+These counts are as measured then. On October 8, 2026 tom.quest 394 removed `dtsCodeBriefs` whole, with the code-todo mirror.
+
 Tables gone: `dtsDailyQueues`, `dtsCodeRulings`, `claudePermissions`.
 Fields gone: `importance` (from `dtsTodos` and `dtsCodeBriefs`), `latestSafeAt`,
 `wakeCondition`, `members`, `plan`, `batches.path`.
