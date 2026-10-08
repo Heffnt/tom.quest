@@ -232,21 +232,3 @@ describe("POST /tts/model-of-tom", () => {
     expect((await send(t, payload(), "wrong")).status).toBe(401);
   });
 });
-
-describe("worker context routes", () => {
-  afterEach(() => vi.unstubAllEnvs());
-
-  it("returns the exact missing-layer message instead of a framework error", async () => {
-    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
-    const t = convexTest({ schema, modules });
-    for (const [path, method] of [
-      ["/tts/planner-context", "GET"],
-    ] as const) {
-      const response = await t.fetch(path, { method, headers: { "X-TTS-Key": "s3cret" } });
-      expect(response.status).toBe(503);
-      // The map goes to every run now, so `operate` is the first — and only —
-      // layer the assembler misses when nothing is published.
-      await expect(response.json()).resolves.toEqual({ error: "model-of-tom layer operate is not stored" });
-    }
-  });
-});

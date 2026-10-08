@@ -9,7 +9,7 @@ import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { requireTom } from "./authRoles";
 import { applyStatusChange, logEvent } from "./tts";
-import { DAY_MS, SESSION_OUTCOME, buildDoneSet, isChangeSubject, isReadyForTom, rulingAnswers } from "./ttsShared";
+import { isChangeSubject } from "./ttsShared";
 import { eitherId, resolveId, todoReader, todoRulings, withPlainTodoIds } from "./jarvis/tables";
 import { listForDigest } from "./jarvis/outbox";
 
@@ -32,19 +32,15 @@ import { listForDigest } from "./jarvis/outbox";
 // EVERY VERDICT'S EFFECT IS APPLIED AT WRITE TIME, OR AT THE ONE MOMENT ITS
 // EFFECT CAN EXIST (the lifeos update, phase 7; there is no apply job on the
 // box any more). Per subject:
-//   life   — revise drops readiness to "unprepared" here and the planner's
-//            prepare pass re-prepares the todo with the sentence, consuming
-//            the ruling when the re-prep lands; archive archives here;
+//   life   — revise drops readiness to "unprepared" here; archive archives here;
 //            approve is ratification and applies here; session applies the
 //            moment Tom opens an interactive session on the todo
 //            (markLiveSessionRulingApplied, from claudeSessions.insertSession).
 //   code   — the repo is the system of record, so the effect is work in the
-//            repo: an approve or archive is recorded and stays pending on
-//            the feed, and nothing consumes it (the work queue,
-//            internalWorkQueue, lists only rows of the plain todos table);
-//            revise was consumed by the planner's brief pass, which is
-//            retired with ComplexMultiTrigger's registry (ruling 70) — a code
-//            ruling needs a brief and nothing writes one now; session applies
+//            repo: an approve or archive is recorded. Revise was consumed by
+//            the planner's brief pass, which is retired with
+//            ComplexMultiTrigger's registry (ruling 70) — a code ruling needs
+//            a brief and nothing writes one now; session applies
 //            the moment Tom opens an interactive session on the code block, whose opener names each
 //            subject and sentence it consumes (liveCodeSessionRulings +
 //            markCodeSessionRulingsApplied, from claudeSessions.insertSession).
@@ -775,13 +771,10 @@ export const internalMarkRulingApplied = internalMutation({
   },
 });
 
-// Planner context (GET /tts/planner-context): what Tom ruled lately, newest
-// first — a signal, not a work feed (that is internalPendingRulings).
+// Recent rulings, newest first.
 export const internalRecentRulings = internalQuery({
   args: { limit: v.optional(v.number()) },
   handler: async (ctx, { limit }) => {
-    // The planner reads these as Tom's recent rulings on its todos, which it
-    // reads as plain rows.
     return await withPlainTodoIds(
       ctx,
       await ctx.db
@@ -792,87 +785,6 @@ export const internalRecentRulings = internalQuery({
     );
   },
 });
-
-/** How long a todo whose work-queue run under an approve did not complete
- *  waits before the queue is offered it again under the same approve. */
-const WORK_RETRY_MS = DAY_MS;
-
-/**
- * The todos an unattended agent may work now (GET /jarvis/context?for=
- * work-queue), so the box's work queue holds no eligibility rule of its own.
- * Eligible: ready for Tom (ttsShared.isReadyForTom: active, awake, every need
- * done or archived, prepared), marked for an agent (actor "agent"), a
- * non-empty brief, Tom's live ruling on it (liveRulings) an approve that
- * still answers it (rulingAnswers: ruled after the todo last changed), and
- * not already worked under that approve: a session-outcome the queue posted
- * on the todo (events, subject the plain id) naming the approve as
- * data.rulingId leaves it out for good when it completed, and for
- * WORK_RETRY_MS after it when it did not. No live approve, no work: Tom's
- * delegate decision of 2026-09-27, only ruled todos.
- *
- * In need order: dated todos soonest due first, then the rest stalest
- * (oldest updatedAt) first, the walk the work queue took. Each carries the
- * plain id, the statement, the whole prepared instruction (null where not
- * set; the brief never is), and the approve's id and sentence (verbatim,
- * null when he wrote none).
- */
-export const internalWorkQueue = internalQuery({
-  args: {},
-  handler: async (ctx) => {
-    const now = Date.now();
-    const todos = await ctx.db.query("todos").collect();
-    const doneSet = buildDoneSet(todos);
-    const out: {
-      todo: Doc<"todos">;
-      ruling: Doc<"rulings">;
-    }[] = [];
-    for (const todo of todos) {
-      if (todo.actor !== "agent" || !isReadyForTom(todo, doneSet, now)) continue;
-      // Rulings name a todo by either id (convex/jarvis/tables.ts).
-      const live = liveRulings(await todoRulings(ctx, todo._id)).get(
-        subjectKey({ subjectType: "life", todoId: todo._id }),
-      );
-      if (live === undefined || live.verdict !== "approve" || !rulingAnswers(live, todo)) continue;
-      if ((todo.brief ?? "").trim() === "") continue;
-      if (await workedUnder(ctx, todo._id, live._id, now)) continue;
-      out.push({ todo, ruling: live });
-    }
-    const dated = (t: Doc<"todos">) => t.timingClass === "dated" && t.dueAt !== undefined;
-    out.sort((a, b) => {
-      if (dated(a.todo) !== dated(b.todo)) return dated(a.todo) ? -1 : 1;
-      if (dated(a.todo)) return (a.todo.dueAt as number) - (b.todo.dueAt as number);
-      return a.todo.updatedAt - b.todo.updatedAt;
-    });
-    return out.map(({ todo, ruling }) => ({
-      id: todo._id,
-      title: todo.statement,
-      brief: todo.brief as string,
-      entryAction: todo.entryAction ?? null,
-      workDescription: todo.workDescription ?? null,
-      doneWhen: todo.condition ?? null,
-      mustNotBreak: todo.mustNotBreak ?? null,
-      approve: { rulingId: ruling._id, sentence: ruling.sentence ?? null },
-    }));
-  },
-});
-
-/** Whether the work queue already ran on this todo under this approve: an
- *  outcome that completed settles it; one that did not holds it back for
- *  WORK_RETRY_MS. */
-async function workedUnder(ctx: QueryCtx, todoId: Id<"todos">, rulingId: Id<"rulings">, now: number): Promise<boolean> {
-  const outcomes = await ctx.db
-    .query("events")
-    .withIndex("by_kind_subject_at", (q) => q.eq("kind", SESSION_OUTCOME).eq("subject", todoId))
-    .order("desc")
-    .collect();
-  for (const row of outcomes) {
-    const d = (row.data ?? {}) as { rulingId?: unknown; outcome?: unknown };
-    if (d.rulingId !== rulingId) continue;
-    if (d.outcome === "completed") return true;
-    if (now - row.at < WORK_RETRY_MS) return true;
-  }
-  return false;
-}
 
 // The one-time copy of dtsCodeRulings into this table (run at deploy,
 // `npx convex run ttsRulings:internalMigrateCodeRulings`) is gone with the

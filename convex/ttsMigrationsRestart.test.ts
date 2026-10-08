@@ -147,8 +147,6 @@ describe("the seven restart todos", () => {
     expect(back.map((r) => r.statement)).toContain("email professors to ask them to be my advisor");
     for (const row of back) expect(row).toMatchObject({ status: "active", actor: "tom", readiness: "prepared" });
 
-    // The work queue takes only actor-agent todos with an approve; none of these.
-    expect(await t.query(internal.ttsRulings.internalWorkQueue, {})).toEqual([]);
   });
 });
 

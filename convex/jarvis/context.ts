@@ -1,26 +1,14 @@
 // context.ts — GET /jarvis/context?for=<caller>: the one door a box job reads
 // its context through.
 //
-// Each caller's payload was its own route under /tts/ (planner-context,
-// ask-context, learning-input, simplify-input; prelude-delivery, golden-input
-// and label-input went with the evals request protocol, s6; capture-context
-// and weekly-input went with Gmail and Canvas capture and the weekly job in the
-// redesign of 2026-10-06). They are one route now, one
-// reader per caller in READERS below, each building the same bytes its old
-// route built: the old routes in convex/http.ts call these readers, so the
-// two spellings cannot drift while both stand. The /tts/ registrations go
-// when the box's last caller spells this route.
-//
-// The reader names are the box's word for what it is doing (planner,
-// ask, learning, simplify, work-queue). The ones that carry the
-// model-of-tom context all read the same text (ttsContext
-// internalContextPrelude takes no caller name).
+// Two readers remain, both the delegate's (Jarvis worker/jobs/delegate.mjs):
+// "planner", the view it decides from, and "ask", its cap and Tom's standing
+// rulings. The planner, the work queue, the nightly learning and the
+// simplification pass that read the others are removed.
 
 import type { HttpRouter } from "convex/server";
 import { httpAction, type ActionCtx } from "../_generated/server";
 import { internal } from "../_generated/api";
-import { nowContext } from "../tts";
-import { SESSION_REPO_NAMES } from "../ttsShared";
 import { jarvisAuth, jsonResponse } from "./auth";
 import { isRulingScope } from "../../shared/jarvis-events.mjs";
 
@@ -32,55 +20,28 @@ function modelOfTomErrorResponse(error: unknown): Response {
 
 type Reader = (ctx: ActionCtx, params: URLSearchParams) => Promise<Response>;
 
-/**
- * The planner's payload: all life todos (their graph fields, `needs` among
- * them, included), Tom's recent rulings, the writing standard, the session
- * repo names and
- * the server's clock. The writing standard rides along because the planner
- * is Node ESM on a box that never loads TypeScript and cannot read a WikiTom
- * checkout; Jarvis worker/jobs/plan-graphs.mjs treats a missing
- * `writingStandard` as fatal, so the field name and type do not change.
- */
-async function plannerContext(ctx: ActionCtx) {
-  const [todos, recentRulings, writingStandard] = await Promise.all([
-    ctx.runQuery(internal.tts.internalListTodos, {}),
-    ctx.runQuery(internal.ttsRulings.internalRecentRulings, { limit: 200 }),
-    ctx.runQuery(internal.ttsContext.internalContextPrelude, {}),
-  ]);
-  return {
-    todos,
-    recentRulings,
-    writingStandard,
-    // Served for the same reason as writingStandard: the box cannot import
-    // SESSION_REPOS, and serving the one home's value stops a hand-written
-    // copy of the repo list appearing in worker/.
-    sessionRepos: SESSION_REPO_NAMES,
-    // The server's clock: the planner resolves "sept 3" against nyCalendarDay
-    // and never computes a New York date of its own.
-    ...nowContext(Date.now()),
-  };
-}
-
 const nonempty = (value: string | null) => (value !== null && value.trim() !== "" ? value.trim() : undefined);
 
-/** `until`, defaulting to now, as the window-ended readers take it. */
-function untilOf(params: URLSearchParams): number {
-  return params.has("until") ? Number(params.get("until")) : Date.now();
-}
-
 const READERS: Record<string, Reader> = {
+  // The delegate's view: the writing standard (the model-of-tom prefix every
+  // planning agent was given), which it treats as required, and the life
+  // todos, to find the one a question names. Named "planner" because the
+  // planner first read it and the deployed delegate asks for it by that name;
+  // the rest of the planner's payload went with the planner.
   planner: async (ctx) => {
     try {
-      return jsonResponse(200, await plannerContext(ctx));
+      const [todos, writingStandard] = await Promise.all([
+        ctx.runQuery(internal.tts.internalListTodos, {}),
+        ctx.runQuery(internal.ttsContext.internalContextPrelude, {}),
+      ]);
+      return jsonResponse(200, { todos, writingStandard });
     } catch (error) {
       return modelOfTomErrorResponse(error);
     }
   },
-  // What the delegate's caller sees before it asks: asks spent in the last
-  // day, its cap, every objection Tom already made about this todo, his
-  // standing rulings in each `scope` the question names (repeatable; "all"
-  // is always read), and the time of his newest session turn, with no text
-  // (tomLastTurnAt in convex/ttsAsk.ts).
+  // The delegate still reads its cap, objections, standing rulings, and Tom's
+  // latest-turn timestamp through this reader. POST /tts/ask remains the
+  // decision pen.
   ask: async (ctx, params) => {
     const sessionId = nonempty(params.get("sessionId"));
     const job = nonempty(params.get("job"));
@@ -100,51 +61,12 @@ const READERS: Record<string, Reader> = {
     });
     return jsonResponse(200, context);
   },
-  // The learning step's input: the window's turns, Slack replies, rulings,
-  // and the objections not yet acted on. `since` omitted means where the
-  // last learning run stopped (convex/ttsNightly.ts).
-  learning: async (ctx, params) => {
-    const sinceRaw = params.get("since");
-    const untilRaw = params.get("until");
-    const since = sinceRaw === null ? undefined : Number(sinceRaw);
-    const until = untilRaw === null ? NaN : Number(untilRaw);
-    if (!Number.isFinite(until) || (since !== undefined && (!Number.isFinite(since) || since >= until))) {
-      return jsonResponse(400, { error: "until (epoch ms) required; since, if given, before it" });
-    }
-    return jsonResponse(200, await ctx.runQuery(internal.ttsNightly.internalLearningInput, { since, until }));
-  },
-  // The simplification pass's gather of the four weeks ending at `until`. It
-  // asks as its own caller, "simplify-input".
-  simplify: async (ctx, params) => {
-    const until = untilOf(params);
-    if (!Number.isFinite(until) || until <= 0) {
-      return jsonResponse(400, { error: "until must be an epoch ms instant" });
-    }
-    let facts;
-    let writingStandard: string;
-    try {
-      [facts, writingStandard] = await Promise.all([
-        ctx.runQuery(internal.ttsSimplify.internalSimplifyInput, { until }),
-        ctx.runQuery(internal.ttsContext.internalContextPrelude, {}),
-      ]);
-    } catch (error) {
-      return modelOfTomErrorResponse(error);
-    }
-    return jsonResponse(200, { ...facts, writingStandard });
-  },
-  // The todos an unattended agent may work now, in need order
-  // (convex/ttsRulings.ts internalWorkQueue): { todos: [{ id, title, brief,
-  // entryAction, workDescription, doneWhen, mustNotBreak, approve: {
-  // rulingId, sentence } }] }.
-  "work-queue": async (ctx) =>
-    jsonResponse(200, { todos: await ctx.runQuery(internal.ttsRulings.internalWorkQueue, {}) }),
 };
 
 const CONTEXT_FOR = Object.keys(READERS);
 
-/** One reader's answer for a request already past auth: the old /tts/ routes
- *  call this so both spellings serve the same bytes. */
-export async function serveContext(ctx: ActionCtx, name: string, request: Request): Promise<Response> {
+/** One reader's answer for a request already past auth. */
+async function serveContext(ctx: ActionCtx, name: string, request: Request): Promise<Response> {
   const reader = READERS[name];
   if (reader === undefined) {
     return jsonResponse(400, { error: `for must be one of ${CONTEXT_FOR.join(", ")}` });

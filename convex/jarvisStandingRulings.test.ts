@@ -53,11 +53,7 @@ async function rule(t: T, scope: string, sentence: string, provenance: Record<st
 }
 
 async function standing(t: T, scopes: string[]): Promise<{ id: string; scope: string; sentence: string }[]> {
-  const query = new URLSearchParams({ for: "ask", job: "work-queue" });
-  for (const scope of scopes) query.append("scope", scope);
-  const res = await t.fetch(`/jarvis/context?${query.toString()}`, { headers: KEY });
-  expect(res.status).toBe(200);
-  return (await res.json()).standingRulings;
+  return (await t.query(internal.ttsAsk.internalAskContext, { job: "work-queue", scopes })).standingRulings;
 }
 
 const eventRow = (t: T, id: string) =>
@@ -288,18 +284,12 @@ describe("the ask reader's standing rulings", () => {
       for (let n = 1; n <= 150; n += 1) await ctx.db.insert("events", ruling(n, false));
       return id;
     });
-    const res = await t.fetch("/jarvis/context?for=ask&job=work-queue&scope=repo:Jarvis", { headers: KEY });
-    const body = await res.json();
+    const body = await t.query(internal.ttsAsk.internalAskContext, {
+      job: "work-queue",
+      scopes: ["repo:Jarvis"],
+    });
     expect(body.standingRulings.map((one: { id: string }) => one.id)).toEqual([kept]);
     expect(body.standingRulingsComplete).toBe(true);
-  });
-
-  it("refuses a scope off the four forms", async () => {
-    const t = convexTest({ schema, modules });
-    vi.stubEnv("JARVIS_KEY", "k");
-    const res = await t.fetch("/jarvis/context?for=ask&job=work-queue&scope=delegate", { headers: KEY });
-    expect(res.status).toBe(400);
-    expect((await res.json()).error).toContain('scope "delegate"');
   });
 });
 

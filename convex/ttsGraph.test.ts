@@ -1,5 +1,5 @@
 import { convexTest } from "convex-test";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import schema from "./schema";
@@ -12,7 +12,6 @@ import {
   isReadyForTom,
   normalizeReadiness,
 } from "./ttsShared";
-import { writePageRows } from "../scripts/context-fixture.mjs";
 
 // The todo graph: todos wired by `needs`, and the ones whose needs are all
 // done are "ready". Batches, which grouped todos into graphs, went with Tom's
@@ -218,84 +217,4 @@ describe("TTS worker pen: closing a todo", () => {
     expect(await statusOf(t, realGoal)).toBe("done");
   });
 
-});
-
-// ── GET /tts/planner-context ─────────────────────────────────────────────────
-
-describe("GET /tts/planner-context", () => {
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
-
-  const publish = (t: ReturnType<typeof convexTest>) =>
-    t.run(async (ctx) => {
-      await ctx.db.insert("modelOfTomPublication", {
-        key: "current",
-        commit: "planner-context-test",
-        committedAt: 1,
-        pushed: true,
-        operate: "operate layer reaches the planner",
-        headers: [{ layers: ["operate"], header: "published map + operate" }],
-      });
-      for (const row of writePageRows()) await ctx.db.insert("modelOfTomFiles", row);
-    });
-  const get = (t: ReturnType<typeof convexTest>, path: string) =>
-    t.fetch(path, { method: "GET", headers: { "X-TTS-Key": "s3cret" } });
-
-  // witness: drop `writingStandard` from the payload — the planner (Node ESM on
-  // a box that never loads TypeScript) cannot import it, so the one home would
-  // silently become a second copy pasted into a worker prompt.
-  it("serves the todos and writing standard, without retired planner fields", async () => {
-    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
-    const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
-    await publish(t);
-    await tom.mutation(api.tts.createTodo, { statement: "sign the lease" });
-    const res = await get(t, "/tts/planner-context");
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    // The door serves the ASSEMBLED CONTEXT: the base, the write pages and the
-    // skills line. The assembler's exact output is
-    // pinned in convex/ttsContext.test.ts.
-    expect(body.writingStandard).toBe("published map + operate\n\noperate layer reaches the planner\n\n── model-of-tom/writing.md ──\n# Writing\n\nBe plain.\n\n\n── model-of-tom/ground.md ──\n# Ground\n\nStart here.\n\n\nSkills: `tts-search skills` lists them; `tts-search skills <name>` prints one.");
-    expect(body.todos.map((todo: Doc<"todos">) => todo.statement)).toEqual(["sign the lease"]);
-    expect(Array.isArray(body.sessionRepos)).toBe(true);
-    expect(typeof body.nyCalendarDay).toBe("string");
-    expect(body).not.toHaveProperty("batches");
-    expect(body).not.toHaveProperty("planRepairs");
-    expect(body).not.toHaveProperty("vocabulary");
-  });
-
-  it("fails closed with the stored-layer error when a requested layer is absent", async () => {
-    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
-    const t = convexTest({ schema, modules });
-    await t.run(async (ctx) => {
-      await ctx.db.insert("modelOfTomPublication", {
-        key: "current", commit: "incomplete", committedAt: 1, pushed: true,
-        write: "write layer", headers: [],
-      });
-    });
-    const response = await get(t, "/tts/planner-context");
-    expect(response.status).toBe(503);
-    // The map goes to every run now, so `operate` is the first layer missing
-    // from a publication that stored only `write`.
-    await expect(response.json()).resolves.toEqual({ error: "model-of-tom layer operate is not stored" });
-  });
-
-  // witness: leave POST /tts/plan-graph routed — a box still running the old
-  // plan pass would go on forming batches after Tom ruled them gone.
-  it("no longer routes the planner's batch pen, its plan-repair door or the batch context", async () => {
-    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
-    const t = convexTest({ schema, modules });
-    const context = await get(t, "/tts/batch-context");
-    expect(context.status).toBe(404);
-    for (const path of ["/tts/plan-graph", "/tts/plan-repairs-consumed"]) {
-      const res = await t.fetch(path, {
-        method: "POST",
-        headers: { "X-TTS-Key": "s3cret", "Content-Type": "application/json" },
-        body: JSON.stringify({ statement: "sign the lease", tasks: [], ids: [] }),
-      });
-      expect(res.status).toBe(404);
-    }
-  });
 });

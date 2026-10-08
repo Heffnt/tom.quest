@@ -1,6 +1,5 @@
 import { httpRouter } from "convex/server";
 import { register as registerJarvisRoutes } from "./jarvis/routes";
-import { serveContext } from "./jarvis/context";
 import { jarvisAuth, presentsJarvisKey } from "./jarvis/auth";
 import { postRuling } from "./jarvis/rulings";
 import { httpAction } from "./_generated/server";
@@ -21,11 +20,6 @@ import { isNarrowListId } from "./ttsShared";
 import { RUN_END_REASONS, type RunEndReason } from "./agents";
 import { auditVerdictOf, mergedOnMain } from "./ttsMerge";
 import { isModelOfTomPath, MODEL_OF_TOM_LAYER_NAMES } from "./ttsSkills";
-import { isRepoRulesPath } from "./ttsContext";
-// The door check's complaints are model-written text that lands where Tom
-// reads it, so it goes through the one redaction on the way in — the same
-// import convex/ttsMerge.ts makes for the same reason.
-import { redactSecrets } from "../shared/redact.mjs";
 import { DELEGATE_ONLY_KINDS, JARVIS_EVENT_ONLY_KINDS, RECORD_ONLY_KINDS, registryDiffOf, STANDING_RULING_ONLY_KINDS, SUBJECT_REQUIRED, TOM_ONLY_KINDS } from "../shared/jarvis-events.mjs";
 
 const http = httpRouter();
@@ -872,135 +866,6 @@ const slackEvents = httpAction(async (ctx, request) => {
 
 http.route({ path: "/slack/events", method: "POST", handler: slackEvents });
 
-// ── The door check's mark, at both doors that receive one ────────────────────
-// The planner's two writing passes read what they wrote against the writing
-// standard and retry once; a write-up that fails both attempts is still posted
-// and reaches Tom carrying the complaints (Tom, 2026-09-12). The complaints are
-// model-written text, so this door bounds them before they are stored:
-//   - each one redacted, then cut to 300 characters. Redaction runs FIRST, as
-//     in convex/ttsMerge.ts: cutting first could split a credential-shaped
-//     span so the pattern no longer matches it;
-//   - at most ten of them, because a mark is one line on a page and a list of
-//     forty complaints is not a line.
-// A non-array, or a member that is not a string, is a 400 naming the field:
-// the worker can fix its payload, and a silently-dropped mark is the hole the
-// whole check exists to close.
-const DOOR_FAULT_MAX_CHARS = 300;
-const DOOR_FAULTS_MAX = 10;
-
-function parseDoorFaults(
-  value: unknown,
-  field: string,
-): { faults: string[] } | { error: string } {
-  if (!Array.isArray(value)) return { error: `${field} must be an array of strings` };
-  const faults: string[] = [];
-  for (const item of value.slice(0, DOOR_FAULTS_MAX)) {
-    if (typeof item !== "string") {
-      return { error: `${field} must be an array of strings` };
-    }
-    faults.push(redactSecrets(item).slice(0, DOOR_FAULT_MAX_CHARS));
-  }
-  return { faults };
-}
-
-// POST /tts/prepare-todo — the worker's preparer job attaches brief /
-// entry action / work description to a life todo and advances its readiness,
-// plus the date the statement itself states, if any.
-// Body: { id, brief?, entryAction?, workDescription?, readiness?, dueAt?,
-// dateKind?, evidence?, groundUpExplanation?, status?, agentToken?,
-// doorFaults? }.
-const ttsPrepareTodo = httpAction(async (ctx, request) => {
-  const denied = ttsAuth(request);
-  if (denied) return denied;
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return jsonResponse(400, { error: "invalid JSON body" });
-  }
-  const b = (body ?? {}) as Record<string, unknown>;
-  if (typeof b.id !== "string" || b.id.length === 0) {
-    return jsonResponse(400, { error: "id (non-empty string) required" });
-  }
-  // "prepared" (ruling 18) is the one value; the retired spellings are
-  // refused since the narrow (the lifeos update, phase 7). The literal
-  // "unprepared" is refused too (an agent never erases a write-up).
-  if (b.readiness !== undefined && b.readiness !== "prepared") {
-    return jsonResponse(400, {
-      error: 'readiness must be "prepared"',
-    });
-  }
-  if (
-    b.dateKind !== undefined &&
-    b.dateKind !== "external" &&
-    b.dateKind !== "self-imposed"
-  ) {
-    return jsonResponse(400, {
-      error: 'dateKind must be "external" or "self-imposed"',
-    });
-  }
-  if (b.dueAt !== undefined && typeof b.dueAt !== "number") {
-    return jsonResponse(400, { error: "dueAt must be a number (epoch ms)" });
-  }
-  // The worker's completion value: "done" is the only status this pen
-  // accepts, and only with the todo's evidence recorded and on a row Tom has
-  // not ruled on — the mutation is the real gate and refuses by name.
-  if (b.status !== undefined && b.status !== "done") {
-    return jsonResponse(400, { error: 'status must be "done"' });
-  }
-  // The run that wrote this write-up, stamped on the row so a ruling on it
-  // later finds the run that produced the text Tom read (convex/agentLabels.ts
-  // agentForToken). A DOOR THAT RECEIVES NO TOKEN STORES NONE: absent is a
-  // supported value and is never inferred, because the alternative — guessing
-  // the newest run that touched this todo — is wrong on the ordinary case (a
-  // prepare pass, a repair pass and a planner pass can all touch one todo in
-  // an hour) and a wrong edge poisons the eval corpus silently.
-  const oldToken = oldSpelling(b, { runToken: "agentToken" });
-  if (oldToken) return jsonResponse(400, { error: oldToken });
-  const agentToken = b.agentToken;
-  if (agentToken !== undefined && (typeof agentToken !== "string" || agentToken === "")) {
-    return jsonResponse(400, { error: "agentToken, when given, is a non-empty string" });
-  }
-  // The door check's complaints, when the write-up was refused twice. A pass
-  // that got through sends no key at all and the event carries none — absence
-  // is the clean answer, so there is nothing to clear.
-  let doorFaults: string[] | undefined;
-  if (b.doorFaults !== undefined) {
-    const parsed = parseDoorFaults(b.doorFaults, "doorFaults");
-    if ("error" in parsed) return jsonResponse(400, parsed);
-    doorFaults = parsed.faults;
-  }
-  const str = (x: unknown) => (typeof x === "string" ? x : undefined);
-  try {
-    const result = await ctx.runMutation(internal.tts.internalPrepareTodo, {
-      id: b.id,
-      brief: str(b.brief),
-      entryAction: str(b.entryAction),
-      workDescription: str(b.workDescription),
-      readiness: b.readiness as "prepared" | undefined,
-      // The date the STATEMENT states, when it states one. The mutation is
-      // the real gate: a first date only, never over an existing one.
-      dueAt: b.dueAt as number | undefined,
-      dateKind: b.dateKind as "external" | "self-imposed" | undefined,
-      // The graph worker's three: the artifact that shows the work happened,
-      // the self-contained "more" layer, and the completion itself.
-      evidence: str(b.evidence),
-      groundUpExplanation: str(b.groundUpExplanation),
-      status: b.status as "done" | undefined,
-      runToken: str(agentToken),
-      doorFaults,
-    });
-    // A refused completion is a 409 carrying the why: a worker told ok would
-    // report as landed a todo that is still open.
-    return result.ok ? jsonResponse(200, result) : jsonResponse(409, { error: result.reason });
-  } catch (e) {
-    return jsonResponse(400, {
-      error: e instanceof Error ? e.message : String(e),
-    });
-  }
-});
-
-http.route({ path: "/tts/prepare-todo", method: "POST", handler: ttsPrepareTodo });
 
 // GET /tts/state — the record as a box job or a session reads it: all todos
 // and the server's clock. The server owns
@@ -1023,8 +888,7 @@ const ttsState = httpAction(async (ctx, request) => {
     todos,
     // The one home reaching the one caller that cannot import it: the delegate
     // is worker/jobs/delegate.mjs and Node does not load .ts, so the narrow
-    // list and the delegate's budgets ride this payload the way
-    // writingStandard and sessionRepos ride /tts/planner-context.
+    // list and the delegate's budgets ride this payload.
     narrowList: NARROW_LIST,
     delegate: {
       maxPerSession: DELEGATE_MAX_PER_SESSION,
@@ -1038,72 +902,6 @@ const ttsState = httpAction(async (ctx, request) => {
 });
 
 http.route({ path: "/tts/state", method: "GET", handler: ttsState });
-
-// ── TTS code-todo ruling loop (spec §5.3) ────────────────────────────────────
-// Same TTS_WORKER_KEY path: the worker reads back Tom's pending rulings and
-// reports each application. The worker never rules — recordRuling remains
-// Tom-gated in ttsRulings.ts.
-
-// GET /tts/rulings — the rulings a box job should act on (unapplied and not
-// superseded by a newer ruling on the same subject), from the unified
-// ttsRulings table. Both subject types ride the one feed: rows carry
-// subjectType, and the planner (worker/jobs/plan-graphs.mjs) filters for its
-// own kind — a "life" revise → its prepare pass — consuming only what it
-// served. A "code" approve or archive rides the feed too and stays pending
-// there: nothing consumes it. Each row carries its _id, which the planner
-// echoes back to /tts/ruling-applied.
-const ttsRulingsFeed = httpAction(async (ctx, request) => {
-  const denied = ttsAuth(request);
-  if (denied) return denied;
-  const pending = await ctx.runQuery(
-    internal.ttsRulings.internalPendingRulings,
-    {},
-  );
-  return jsonResponse(200, { pending });
-});
-
-// /tts/rulings is the only path. The feed carries every subject type, so there
-// is no code-scoped variant: a /tts/code-rulings alias pointed at this same
-// handler for workers predating the unified feed, and was removed once every
-// caller had moved to /tts/rulings.
-http.route({ path: "/tts/rulings", method: "GET", handler: ttsRulingsFeed });
-
-// POST /tts/code-ruling-applied — the worker's apply report. Body: { id,
-// result } where result is a commit sha / PR url / error text.
-const ttsRulingApplied = httpAction(async (ctx, request) => {
-  const denied = ttsAuth(request);
-  if (denied) return denied;
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return jsonResponse(400, { error: "invalid JSON body" });
-  }
-  const b = (body ?? {}) as Record<string, unknown>;
-  if (typeof b.id !== "string" || b.id.length === 0) {
-    return jsonResponse(400, { error: "id (non-empty string) required" });
-  }
-  if (typeof b.result !== "string" || b.result.length === 0) {
-    return jsonResponse(400, { error: "result (non-empty string) required" });
-  }
-  try {
-    await ctx.runMutation(internal.ttsRulings.internalMarkRulingApplied, {
-      id: b.id,
-      result: b.result,
-    });
-    return jsonResponse(200, { ok: true });
-  } catch (e) {
-    return jsonResponse(400, {
-      error: e instanceof Error ? e.message : String(e),
-    });
-  }
-});
-
-http.route({
-  path: "/tts/ruling-applied",
-  method: "POST",
-  handler: ttsRulingApplied,
-});
 
 // POST /tts/ruling is POST /jarvis/ruling's old spelling (convex/jarvis/rulings.ts),
 // served until the box's callers spell the new one.
@@ -1198,17 +996,6 @@ const ttsAsk = httpAction(async (ctx, request) => {
 });
 http.route({ path: "/tts/ask", method: "POST", handler: ttsAsk });
 
-// GET /tts/ask-context — what the caller sees BEFORE it asks: how many asks it
-// has spent in the last day, its cap, and every objection Tom has already made
-// about this todo. Those objections go into the delegate's prompt, and they
-// are the point of the whole loop: the delegate never re-takes a decision he
-// reverted. Read-only, worker-key gated, and bounded — one index read per kind.
-const ttsAskContext = httpAction(async (ctx, request) => {
-  const denied = ttsAuth(request);
-  if (denied) return denied;
-  return await serveContext(ctx, "ask", request);
-});
-http.route({ path: "/tts/ask-context", method: "GET", handler: ttsAskContext });
 
 // ── The mechanical merge gate's three doors (convex/ttsMerge.ts) ────────────
 // Two facts about the merged head are read: the tests are green, and an audit
@@ -1532,37 +1319,6 @@ const ttsMerge = httpAction(async (ctx, request) => {
 });
 http.route({ path: "/tts/merge", method: "POST", handler: ttsMerge });
 
-// GET /tts/planner-context — everything the planner's prepare pass and the
-// delegate's fallback work from: all life todos (their graph fields, needs
-// among them, included), Tom's recent rulings, the writing standard, the
-// session repo names and the server's clock.
-//
-// WHY THE WRITING STANDARD RIDES THIS PAYLOAD: the planner is Node ESM on a box
-// that never loads TypeScript — it cannot import the text and it cannot read a
-// git checkout of WikiTom. Serving it here is what keeps the text the planner
-// pastes into its prompt the same text every TypeScript caller reads.
-//
-// ITS SOURCE is the context assembler (convex/ttsContext.ts assembleContext):
-// the planner has no subject of its own, so nothing expands and every page it
-// did not get is one line naming the command that gets it. THE FIELD NAME AND
-// TYPE DO NOT CHANGE: worker/jobs/plan-graphs.mjs treats a missing
-// `writingStandard` as fatal.
-
-const ttsPlannerContext = httpAction(async (ctx, request) => {
-  const denied = ttsAuth(request);
-  if (denied) return denied;
-  return await serveContext(ctx, "planner", request);
-});
-
-http.route({
-  path: "/tts/planner-context",
-  method: "GET",
-  handler: ttsPlannerContext,
-});
-
-// (GET /tts/batch-context, the planner's door while batches existed, was
-// served for one rollout after Tom's ruling of 2026-09-24 to have no batches,
-// and went once the rolled box read /tts/planner-context.)
 
 // ── POST /tts/model-of-tom — the nightly job's three-layer publication every
 // prompt selects from (the lifeos update, phase 4) ───────────────────────────
@@ -1688,134 +1444,9 @@ const ttsModelOfTom = httpAction(async (ctx, request) => {
 
 http.route({ path: "/tts/model-of-tom", method: "POST", handler: ttsModelOfTom });
 
-// POST /tts/repo-rules — one repo's AGENTS.md bodies, replaced whole.
-//
-// SAME REASON AS THE DOOR ABOVE: the context assembler pre-expands the repo
-// rules for the directories a todo's brief names (convex/ttsContext.ts rule 9)
-// and it runs inside Convex, which has no filesystem. The nightly job reads
-// each repo's own immutable HEAD and posts the bodies here; a run with no
-// checkout at all still learns from the fetchable block that these files exist.
-//
-// Per repo, not per post: the mutation replaces this repo's rows and no other
-// repo's, so a night that could read one checkout and not another leaves the
-// second exactly as it was.
-const REPO_RULES_FILES_MAX = 24;
-
-const ttsRepoRules = httpAction(async (ctx, request) => {
-  const denied = ttsAuth(request);
-  if (denied) return denied;
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return jsonResponse(400, { error: "invalid JSON body" });
-  }
-  const b = (body ?? {}) as Record<string, unknown>;
-  if (typeof b.repo !== "string" || b.repo.trim() === "") {
-    return jsonResponse(400, { error: "repo (a session repo name) required" });
-  }
-  if (typeof b.commit !== "string" || !/^[0-9a-f]{40}$/.test(b.commit)) {
-    return jsonResponse(400, { error: "commit (40 hex characters) required" });
-  }
-  if (typeof b.syncedAt !== "number" || !Number.isFinite(b.syncedAt)) {
-    return jsonResponse(400, { error: "syncedAt (epoch ms) required" });
-  }
-  if (!Array.isArray(b.files) || b.files.length === 0) {
-    return jsonResponse(400, { error: "files (non-empty array) required" });
-  }
-  if (b.files.length > REPO_RULES_FILES_MAX) {
-    return jsonResponse(400, { error: `at most ${REPO_RULES_FILES_MAX} files per post — got ${b.files.length}` });
-  }
-  const files: { path: string; body: string; bytes: number }[] = [];
-  for (let i = 0; i < b.files.length; i++) {
-    const f = b.files[i] as Record<string, unknown> | null;
-    if (typeof f !== "object" || f === null || !isRepoRulesPath(f.path)) {
-      return jsonResponse(400, { error: `files[${i}].path must be an AGENTS.md path inside the repo` });
-    }
-    if (typeof f.body !== "string" || f.body.trim() === "") {
-      return jsonResponse(400, { error: `files[${i}].body (non-empty string) required` });
-    }
-    if (typeof f.bytes !== "number" || !Number.isSafeInteger(f.bytes) || f.bytes < 0) {
-      return jsonResponse(400, { error: `files[${i}].bytes (nonnegative integer) required` });
-    }
-    files.push({ path: f.path, body: f.body, bytes: f.bytes });
-  }
-  try {
-    const result = await ctx.runMutation(internal.ttsContext.internalReplaceRepoRules, {
-      repo: b.repo,
-      commit: b.commit,
-      syncedAt: b.syncedAt,
-      files,
-    });
-    return jsonResponse(200, { ok: true, ...result });
-  } catch (e) {
-    return jsonResponse(400, { error: e instanceof Error ? e.message : String(e) });
-  }
-});
-
-http.route({ path: "/tts/repo-rules", method: "POST", handler: ttsRepoRules });
 
 // ── The nightly job's doors (convex/ttsNightly.ts) ───────────────────────────
 
-// GET /tts/learning-input?until=<epoch ms>[&since=<epoch ms>] — what the
-// learning step reads: the turns Tom typed with the agent's replies around
-// them, his Slack replies, his rulings, in the window; and the objections
-// not yet acted on with the changes they can name. `since` omitted means
-// "where the last learning run stopped" (convex/ttsNightly.ts).
-const ttsLearningInput = httpAction(async (ctx, request) => {
-  const denied = ttsAuth(request);
-  if (denied) return denied;
-  return await serveContext(ctx, "learning", request);
-});
-
-http.route({ path: "/tts/learning-input", method: "GET", handler: ttsLearningInput });
-
-// GET /tts/simplify-input?until=<epoch ms> — the weekly simplification pass's
-// one deterministic gather (convex/ttsSimplify.ts): the four weeks ending at
-// `until` (default: now) of runs, layers, skills, tools, hooks, working
-// directories, a token bag off the newest transcripts, the gate's whole
-// failure history and what the pass already proposed. Read on indexes, no
-// model in the loop; the job adds the rule files from the WikiTom checkout and
-// makes the one model call.
-//
-// The prelude rides along because the model's proposal sentences are written
-// FOR TOM, so the run that writes them carries the write pages. It asks as its
-// OWN caller, "simplify-input".
-const ttsSimplifyInput = httpAction(async (ctx, request) => {
-  const denied = ttsAuth(request);
-  if (denied) return denied;
-  return await serveContext(ctx, "simplify", request);
-});
-
-http.route({ path: "/tts/simplify-input", method: "GET", handler: ttsSimplifyInput });
-
-// GET /tts/simplify-open — the proposals whose objection window has closed: a
-// morning message carried each one at least a day ago and Tom did not answer
-// (convex/ttsSimplify.ts internalOpenProposals). The nightly job asks, and
-// turns each into a todo. A read only: nothing is admitted by asking.
-const ttsSimplifyOpen = httpAction(async (ctx, request) => {
-  const denied = ttsAuth(request);
-  if (denied) return denied;
-  return jsonResponse(200, {
-    open: await ctx.runQuery(internal.ttsSimplify.internalOpenProposals, {}),
-  });
-});
-
-http.route({ path: "/tts/simplify-open", method: "GET", handler: ttsSimplifyOpen });
-
-// GET /tts/removals-open — every removal-loop pull request posted in the last
-// month, as of its newest round: whether his day to object has closed, and
-// his words if he replied (convex/ttsSimplify.ts internalOpenRemovals). The
-// daily loop asks, then merges, rewrites or closes. A read only.
-const ttsRemovalsOpen = httpAction(async (ctx, request) => {
-  const denied = ttsAuth(request);
-  if (denied) return denied;
-  return jsonResponse(200, {
-    removals: await ctx.runQuery(internal.ttsSimplify.internalOpenRemovals, {}),
-  });
-});
-
-http.route({ path: "/tts/removals-open", method: "GET", handler: ttsRemovalsOpen });
 
 // A registration token is a UUID (worker/agents/registration.mjs mints it with
 // crypto.randomUUID), and the shape is CHECKED BEFORE THE LOOKUP. An
@@ -1864,122 +1495,9 @@ const ttsSearchEvals = httpAction(async (ctx, request) => {
 
 http.route({ path: "/tts/search/evals", method: "GET", handler: ttsSearchEvals });
 
-// POST /tts/learning-objections-consumed — body { ids: [<dtsEvents id>] }.
-// The job stamps each objection it acted on (reverted, or could not revert
-// and said so), so the next night's read does not return it again.
-const ttsLearningObjectionsConsumed = httpAction(async (ctx, request) => {
-  const denied = ttsAuth(request);
-  if (denied) return denied;
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return jsonResponse(400, { error: "invalid JSON body" });
-  }
-  const ids = (body as { ids?: unknown } | null)?.ids;
-  if (!Array.isArray(ids) || !ids.every((x) => typeof x === "string")) {
-    return jsonResponse(400, { error: "ids (array of strings) required" });
-  }
-  const result = await ctx.runMutation(internal.ttsNightly.internalConsumeLearningObjections, {
-    ids,
-  });
-  return jsonResponse(200, { ok: true, ...result });
-});
-
-http.route({
-  path: "/tts/learning-objections-consumed",
-  method: "POST",
-  handler: ttsLearningObjectionsConsumed,
-});
-
-// GET /tts/repo-proposals?repo=<repo> — the open repository-rule proposals
-// the nightly repo-learning step made for one repository, newest first. A
-// session working in that repository reads them before it edits the nested
-// AGENTS.md files, applies the ones it agrees with on a branch, and posts
-// back below. Read-only, worker key.
-const ttsRepoProposals = httpAction(async (ctx, request) => {
-  const denied = ttsAuth(request);
-  if (denied) return denied;
-  const params = new URL(request.url).searchParams;
-  const repo = params.get("repo");
-  const limitRaw = params.get("limit");
-  const limit = limitRaw === null ? undefined : Number(limitRaw);
-  if (limitRaw !== null && !Number.isFinite(limit)) {
-    return jsonResponse(400, { error: "limit, if given, must be a number" });
-  }
-  const result = await ctx.runQuery(internal.ttsNightly.internalOpenRepoProposals, {
-    repo: repo === null || repo === "" ? undefined : repo,
-    limit,
-  });
-  return jsonResponse(200, result);
-});
-
-http.route({ path: "/tts/repo-proposals", method: "GET", handler: ttsRepoProposals });
-
-// POST /tts/repo-proposal-applied — body { id, commit, line? }. The session
-// that landed a proposal in its repository says so: the row's status becomes
-// "applied" and the commit and the FINAL wording are stamped on it. The next
-// night's repo-learning step reads that and moves the evidence entry from its
-// "— proposed" heading to the live one, rewriting the line to what merged.
-const ttsRepoProposalApplied = httpAction(async (ctx, request) => {
-  const denied = ttsAuth(request);
-  if (denied) return denied;
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return jsonResponse(400, { error: "invalid JSON body" });
-  }
-  const { id, commit, line } = (body ?? {}) as { id?: unknown; commit?: unknown; line?: unknown };
-  if (typeof id !== "string" || id.trim() === "" || typeof commit !== "string" || commit.trim() === "") {
-    return jsonResponse(400, { error: "id and commit (strings) required" });
-  }
-  if (line !== undefined && typeof line !== "string") {
-    return jsonResponse(400, { error: "line, if given, must be a string" });
-  }
-  const result = await ctx.runMutation(internal.ttsNightly.internalApplyRepoProposal, {
-    id: id.trim(),
-    commit: commit.trim(),
-    line,
-  });
-  return jsonResponse(200, { ok: true, ...result });
-});
-
-http.route({ path: "/tts/repo-proposal-applied", method: "POST", handler: ttsRepoProposalApplied });
-
-// POST /tts/repo-proposal-dropped — body { id, reply? }. Tom replied on the
-// proposal's digest line. The nightly job posts this where it would revert a
-// model-of-Tom line: the row's status becomes "dropped", and the next night's
-// repo-learning step writes `dropped:` on the evidence entry, which is what
-// stops the same rule being proposed again.
-const ttsRepoProposalDropped = httpAction(async (ctx, request) => {
-  const denied = ttsAuth(request);
-  if (denied) return denied;
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return jsonResponse(400, { error: "invalid JSON body" });
-  }
-  const { id, reply } = (body ?? {}) as { id?: unknown; reply?: unknown };
-  if (typeof id !== "string" || id.trim() === "") {
-    return jsonResponse(400, { error: "id (string) required" });
-  }
-  if (reply !== undefined && typeof reply !== "string") {
-    return jsonResponse(400, { error: "reply, if given, must be a string" });
-  }
-  const result = await ctx.runMutation(internal.ttsNightly.internalDropRepoProposal, {
-    id: id.trim(),
-    reply,
-  });
-  return jsonResponse(200, { ok: true, ...result });
-});
-
-http.route({ path: "/tts/repo-proposal-dropped", method: "POST", handler: ttsRepoProposalDropped });
-
 // POST /tts/event — one dtsEvents row from the worker. Body: { kind, data? }.
-// The job records a failed step ("nightly-failure"), its learning run
-// ("learning-run") and its summary ("nightly-run") this way, which is what
+// The job records a failed step ("nightly-failure") and its summary
+// ("nightly-run") this way, which is what
 // the digest reads for "job failures" and "what the nightly job wrote". Before
 // each push of WikiTom's main it also posts a "nightly-run" row keyed
 // `WikiTom@<sha>` for each commit it is about to push, which opens the merge
