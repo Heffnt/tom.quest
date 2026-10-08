@@ -1,10 +1,8 @@
 // The nightly job's server half (the lifeos update, phase 4). The job itself
 // is worker/jobs/nightly.mjs on the Jarvis Box; it reaches Convex only over
-// the TTS_WORKER_KEY routes in convex/http.ts, and these are the three reads
-// and writes it needs that nothing else provided:
+// the TTS_WORKER_KEY routes in convex/http.ts, and these are the reads and
+// writes it needs that nothing else provided:
 //
-//   GET  /tts/export         one page of one table, for the nightly copy of
-//                            the record into WikiTom tts/snapshot/
 //   GET  /tts/learning-input what the learning step reads: the turns Tom
 //                            typed since the last learning run with the
 //                            agent's replies around them, his Slack replies,
@@ -20,8 +18,6 @@
 
 import { v } from "convex/values";
 import { internalMutation, internalQuery } from "./_generated/server";
-import type { TableNames } from "./_generated/dataModel";
-import schema from "./schema";
 import { clip } from "../shared/clip.mjs";
 import { rowSource, type RowSource } from "./sessionRows";
 // The kinds this pen routes onward besides LEARNING_CHANGE. Their rows,
@@ -31,123 +27,6 @@ import { copyDtsRow, recordEvent } from "./jarvis/events";
 import { listForDigest } from "./jarvis/outbox";
 import { LEARNING_CHECK_FAILED, REPO_PROPOSAL } from "./ttsDigest";
 import { SEND_AS_TOM_FAILED, SEND_AS_TOM_UNKNOWN, SEND_PROPOSAL, SENT_AS_TOM } from "./ttsSignoff";
-
-// ── The export ───────────────────────────────────────────────────────────────
-// Every table in the schema except the auth ones (the six @convex-dev/auth
-// tables, all named auth*: accounts, sessions, refresh tokens, verification
-// codes, verifiers, rate limits — credentials and session secrets, which have
-// no business in a git repository). Derived from the schema, so a new table
-// is in tomorrow's copy without anyone remembering to list it.
-export const EXPORT_TABLES: string[] = Object.keys(schema.tables)
-  .filter((name) => !name.startsWith("auth"))
-  .sort();
-
-export function isExportTable(name: unknown): name is TableNames {
-  return typeof name === "string" && EXPORT_TABLES.includes(name);
-}
-
-// Page bounds. ROWS ARE NOT THE UNIT THAT MATTERS: a dtsTodos row is a few
-// hundred bytes, a claudeMessages row up to ~32KB (the parser's cut), and a
-// claudeMessageOverflow chunk 256KB — so a fixed 200 rows is 40KB of one table
-// and 50MB of another, past what one query may read. A page that cannot be
-// read is not a slow copy, it is no copy of that table at all, every night.
-// So a page ends at whichever comes first: `numItems` rows, or
-// EXPORT_PAGE_BYTES of row bytes. One row always goes out, however big, so a
-// single oversized row can never stall the walk.
-export const EXPORT_PAGE_DEFAULT = 200;
-export const EXPORT_PAGE_MAX = 1000;
-export const EXPORT_PAGE_BYTES = 2 * 1024 * 1024;
-
-/**
- * The cursor: the last row of the page, by (_creationTime, _id) — the order
- * the by_creation_time index reads in, _id breaking a tie. Convex's own
- * pagination cursor cannot be used here because a page ends where the bytes
- * run out, not where a fixed row count does.
- */
-export function exportCursor(row: { _creationTime: number; _id: string }): string {
-  return JSON.stringify({ t: row._creationTime, id: row._id });
-}
-
-export function parseExportCursor(cursor: string | null): { t: number; id: string } | null {
-  if (cursor === null || cursor === "") return null;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(cursor);
-  } catch {
-    throw new Error("not an export cursor");
-  }
-  const c = (parsed ?? {}) as { t?: unknown; id?: unknown };
-  if (typeof c.t !== "number" || typeof c.id !== "string") {
-    throw new Error("not an export cursor");
-  }
-  return { t: c.t, id: c.id };
-}
-
-/** What one row costs the page's budget: the bytes of its JSON, which is what
- * the job writes and what the read budget is spent on. */
-export function rowBytes(row: unknown): number {
-  const json = JSON.stringify(row, (_key, value) =>
-    typeof value === "bigint" ? value.toString() : value,
-  );
-  return typeof json === "string" ? new TextEncoder().encode(json).length : 0;
-}
-
-// One page, in creation order, of the rows created BEFORE `boundary` — the
-// job fixes the boundary at the instant it starts, so a row written while
-// the job pages (an hourly update, a session's flush) is in tomorrow's copy
-// and never straddles a page. Same boundary for every table.
-//
-// THE BOUNDARY FIXES MEMBERSHIP, NOT STATE. Each page is its own query, so
-// the copy is a nightly copy and not a point-in-time transaction: a row
-// updated between two pages is exported in its later state, and a row
-// deleted between them is in neither. The job's README says so; nothing
-// downstream may read tts/snapshot/ as one instant of the record.
-export const internalExportPage = internalQuery({
-  args: {
-    table: v.string(),
-    boundary: v.number(),
-    cursor: v.union(v.string(), v.null()),
-    numItems: v.number(),
-  },
-  handler: async (ctx, { table, boundary, cursor, numItems }) => {
-    if (!isExportTable(table)) throw new Error(`not an exported table: ${table}`);
-    const size = Math.max(1, Math.min(EXPORT_PAGE_MAX, Math.floor(numItems)));
-    const from = parseExportCursor(cursor);
-    // The built-in creation-time index exists on every table; the table name
-    // is a runtime value here, which the typed query builder cannot narrow.
-    // The range starts AT the cursor's instant rather than after it, and the
-    // rows at that instant are skipped by id below — a tie there would
-    // otherwise drop a row from the copy silently.
-    const stream = ctx.db
-      .query(table as "dtsEvents")
-      .withIndex("by_creation_time", (q) =>
-        from === null
-          ? q.lt("_creationTime", boundary)
-          : q.gte("_creationTime", from.t).lt("_creationTime", boundary),
-      )
-      .order("asc");
-    const rows: unknown[] = [];
-    let bytes = 0;
-    let isDone = true;
-    let continueCursor = cursor ?? "";
-    // Read one row at a time: a page that stops at its byte budget must not
-    // have read the whole of a fixed-size page to get there.
-    for await (const row of stream) {
-      if (from !== null && (row._creationTime < from.t || (row._creationTime === from.t && row._id <= from.id))) {
-        continue;
-      }
-      const size_ = rowBytes(row);
-      if (rows.length > 0 && (rows.length >= size || bytes + size_ > EXPORT_PAGE_BYTES)) {
-        isDone = false;
-        break;
-      }
-      rows.push(row);
-      bytes += size_;
-      continueCursor = exportCursor(row);
-    }
-    return { rows, isDone, continueCursor, bytes };
-  },
-});
 
 // ── The learning input ───────────────────────────────────────────────────────
 // The learning step reads what Tom did: the turns he typed in sessions

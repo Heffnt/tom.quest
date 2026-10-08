@@ -26,7 +26,6 @@ import { isRepoRulesPath } from "./ttsContext";
 import { NO_SIGNOFF, parseProposal } from "./ttsSignoff";
 import { INTENT_SOURCES_MAX, isIntentSourcePath } from "./intent";
 import { VOCABULARY_TERMS_MAX } from "./vocabulary";
-import { EXPORT_PAGE_DEFAULT, EXPORT_TABLES, isExportTable } from "./ttsNightly";
 // The door check's complaints are model-written text that lands where Tom
 // reads it, so it goes through the one redaction on the way in — the same
 // import convex/ttsMerge.ts makes for the same reason.
@@ -2004,48 +2003,7 @@ const ttsVocabularyPost = httpAction(async (ctx, request) => {
 
 http.route({ path: "/tts/vocabulary", method: "POST", handler: ttsVocabularyPost });
 
-// ── The nightly job's three doors (convex/ttsNightly.ts) ─────────────────────
-
-// GET /tts/export?table=<name>&boundary=<epoch ms>&cursor=<opaque>&numItems=<n>
-// — one page of one table, rows created before the boundary, in creation
-// order. The job walks `continueCursor` until `isDone` for every table in
-// `EXPORT_TABLES` (GET /tts/export with no table lists them) and writes one
-// JSON-lines file per table into WikiTom tts/snapshot/. Same key as every
-// worker read; the auth tables are not on the list at all.
-const ttsExport = httpAction(async (ctx, request) => {
-  const denied = ttsAuth(request);
-  if (denied) return denied;
-  const params = new URL(request.url).searchParams;
-  const table = params.get("table");
-  if (table === null) return jsonResponse(200, { tables: EXPORT_TABLES });
-  if (!isExportTable(table)) {
-    return jsonResponse(400, { error: `not an exported table: ${table}` });
-  }
-  const boundary = Number(params.get("boundary"));
-  if (!Number.isFinite(boundary) || boundary <= 0) {
-    return jsonResponse(400, { error: "boundary (epoch ms) required" });
-  }
-  const numItems = params.has("numItems")
-    ? Number(params.get("numItems"))
-    : EXPORT_PAGE_DEFAULT;
-  if (!Number.isFinite(numItems) || numItems < 1) {
-    return jsonResponse(400, { error: "numItems must be a positive number" });
-  }
-  try {
-    const page = await ctx.runQuery(internal.ttsNightly.internalExportPage, {
-      table,
-      boundary,
-      cursor: params.get("cursor"),
-      numItems,
-    });
-    return jsonResponse(200, page);
-  } catch (e) {
-    // A cursor this route did not write (an old run's, a hand-typed one).
-    return jsonResponse(400, { error: e instanceof Error ? e.message : String(e) });
-  }
-});
-
-http.route({ path: "/tts/export", method: "GET", handler: ttsExport });
+// ── The nightly job's doors (convex/ttsNightly.ts) ───────────────────────────
 
 // GET /tts/learning-input?until=<epoch ms>[&since=<epoch ms>] — what the
 // learning step reads: the turns Tom typed with the agent's replies around
