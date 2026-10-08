@@ -58,10 +58,15 @@ function fontReady(fontSize: number): Promise<unknown> {
   if (typeof document === "undefined" || !document.fonts) {
     return Promise.resolve();
   }
+  // A face that fails to load rejects the load: Manrope's own, or a fallback
+  // in MANROPE_FAMILY such as local("Arial") where the system has none. The
+  // measurement runs anyway, on whatever face the browser drew with; without
+  // this catch it never ran, the letters kept the estimated widths, and on a
+  // face wider than Manrope the wordmark's letters overlapped.
   return Promise.all([
     document.fonts.load(`${FONT_WEIGHT} ${fontSize}px ${MANROPE_FAMILY}`),
     document.fonts.ready,
-  ]);
+  ]).catch(() => undefined);
 }
 
 export default function TomLogo({

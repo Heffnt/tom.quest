@@ -5,8 +5,8 @@
 // tomSymbolMetrics(symbolParams). The first test pins the shipped default
 // rendering (it must not have changed); the rest fail if the constants return.
 
-import { describe, it, expect, vi } from "vitest";
-import { render } from "@testing-library/react";
+import { afterEach, describe, it, expect, vi } from "vitest";
+import { render, waitFor } from "@testing-library/react";
 
 vi.mock("next/font/local", () => ({
   default: () => ({ className: "manrope", style: { fontFamily: "Manrope" } }),
@@ -73,5 +73,33 @@ describe("TomLogo bars variant", () => {
     const tilted = bars({ ...DEFAULT_TOM_PARAMS, mAngle: 50, dotSize: 90 });
     expect(tilted.barThick).toBeCloseTo(base.barThick, 6);
     expect(tilted.topBarY).toBeCloseTo(base.topBarY, 6);
+  });
+});
+
+// Regression: fontReady was Promise.all(fonts.load, fonts.ready) with no
+// catch. Where a face in the family fails to load (local("Arial") on a system
+// without it) the load rejects, the measurement never ran, and the wordmark
+// kept the estimated letter widths, so its letters overlapped on a wider face.
+describe("TomLogo measurement when a font fails to load", () => {
+  const WIDTHS: Record<string, number> = { t: 70, om: 140, ues: 160 };
+  afterEach(() => {
+    vi.restoreAllMocks();
+    delete (document as { fonts?: unknown }).fonts;
+  });
+
+  it("measures the letters anyway and lays the wordmark out from the measured widths", async () => {
+    Object.defineProperty(document, "fonts", {
+      configurable: true,
+      value: { load: () => Promise.reject(new Error("local(\"Arial\") failed to load")), ready: Promise.resolve() },
+    });
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      return { width: WIDTHS[this.textContent ?? ""] ?? 0 } as DOMRect;
+    });
+    const { container } = render(<TomLogo fontSize={FONT_SIZE} variant="plain" />);
+    const xOf = (word: string) => Number(Array.from(container.querySelectorAll("text")).filter((el) => el.textContent === word).map((el) => el.getAttribute("x"))[0]);
+    const lastTX = () => Math.max(...Array.from(container.querySelectorAll("text")).filter((el) => el.textContent === "t").map((el) => Number(el.getAttribute("x"))));
+    // The estimate is 1.453 em for "ues"; the measured width is 160.
+    await waitFor(() => expect(lastTX() - xOf("ues")).toBeCloseTo(WIDTHS.ues, 6));
+    expect(xOf("om") - Math.min(...Array.from(container.querySelectorAll("text")).filter((el) => el.textContent === "t").map((el) => Number(el.getAttribute("x"))))).toBeCloseTo(WIDTHS.t, 6);
   });
 });
