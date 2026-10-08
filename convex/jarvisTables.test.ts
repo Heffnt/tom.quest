@@ -25,41 +25,34 @@ const todo = {
 };
 
 // The copy into `rulings` ran in production on 2026-09-26 and went with
-// this stack; what stays is the reader of its legacyId and the count the
-// old table is emptied on. A copied row is seeded here as the copy left it.
+// this stack; what stays is the reader of its legacyId. dtsRulings is no
+// longer declared, so an old ruling's id is seeded through an untyped insert
+// into the undeclared table, as production still stores such rows until the
+// sweep (convex/ttsMigrationsSweep.ts) deletes them, and as the copy left it.
+type Untyped = { insert(table: string, doc: Record<string, unknown>): Promise<string> };
+
 describe("rulings under their plain name", () => {
   it("resolves a ruling by its new id or the id it had before the rename", async () => {
     const t = convexTest({ schema, modules });
     await t.run(async (ctx) => {
-      const old = await ctx.db.insert("dtsRulings", { subjectType: "life", verdict: "archive", ruledAt: 1 });
+      const old = await (ctx.db as unknown as Untyped).insert("dtsRulings", { subjectType: "life", verdict: "archive", ruledAt: 1 });
       const copied = await ctx.db.insert("rulings", { subjectType: "life", verdict: "archive", ruledAt: 1, legacyId: old });
       expect(await resolveId(ctx, "rulings", old)).toBe(copied);
       expect(await resolveId(ctx, "rulings", copied)).toBe(copied);
       expect(await resolveId(ctx, "rulings", "not-an-id")).toBeNull();
       const other = await ctx.db.insert("dtsTodos", todo);
       expect(await resolveId(ctx, "rulings", other as unknown as Id<"rulings">)).toBeNull();
+      // An old id no copy carries names no ruling, with or without its old row.
+      const uncopied = await (ctx.db as unknown as Untyped).insert("dtsRulings", { subjectType: "life", verdict: "approve", ruledAt: 2 });
+      expect(await resolveId(ctx, "rulings", uncopied)).toBeNull();
     });
   });
 
-  it("counts rulings beside dtsRulings, and the rows the copy brought", async () => {
-    const t = convexTest({ schema, modules });
-    await t.run(async (ctx) => {
-      const a = await ctx.db.insert("dtsRulings", { subjectType: "life", verdict: "archive", ruledAt: 1 });
-      await ctx.db.insert("dtsRulings", { subjectType: "life", verdict: "approve", ruledAt: 2 });
-      await ctx.db.insert("rulings", { subjectType: "life", verdict: "archive", ruledAt: 1, legacyId: a });
-      // Written by the new code: counted, not copied.
-      await ctx.db.insert("rulings", { subjectType: "life", verdict: "revise", sentence: "s", ruledAt: 3 });
-    });
-    expect(await t.action(internal.jarvis.tables.counts, {})).toEqual({ rulings: { old: 2, new: 2, copied: 1, whole: false } });
-  });
-
-  it("exports exactly the rulings count, the readers' helpers, the check and copyBack; no copy, remap, follow, oldId or write back returns", () => {
+  it("exports exactly the readers' helpers, the check and copyBack; no rulings count, copy, remap, follow, oldId or write back returns", () => {
     expect(Object.keys(tablesModule).sort()).toEqual([
       "copyBack",
       "copyBackPage",
       "copyBackPrunePage",
-      "countPage",
-      "counts",
       "eitherId",
       "leftPage",
       "leftToRemap",

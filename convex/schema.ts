@@ -10,7 +10,6 @@ import {
   SESSION_MODEL,
   FABLE_AVAILABILITY,
   USAGE_LIMIT_REPORT,
-  VOCABULARY_COUNTS,
 } from "./ttsShared";
 
 // `agent` is not a rank between `user` and `admin`: it is a side branch that
@@ -141,75 +140,6 @@ export default defineSchema({
     // every index): the digest's read of post-history-cut box changes recorded
     // in its window, however long after they happened (convex/boxChanges.ts).
     .index("by_kind", ["kind"]),
-
-  // Declarative GPU pool: desired state ("keep N GPUs of type T running these
-  // commands"). A Convex cron reconciles desired-vs-actual against the Turing
-  // API. One row per gpuType. The reconciler derives a reserved squeue job name
-  // ("gpupool:<gpuType>:<fingerprint>") from this config; there is no stored
-  // jobName.
-  gpuPool: defineTable({
-    gpuType: v.string(),
-    desiredCount: v.number(),
-    timeMins: v.number(),
-    memoryMb: v.number(),
-    // The generic, admin-authored worker command(s) — never agent-writable (spec §4.1, §7).
-    commands: v.array(v.string()),
-    projectDir: v.string(),
-    releaseOnExit: v.boolean(),
-    // Completion policy (spec §4.3): "always" keeps desiredCount workers warm (replace on
-    // exit); "never" runs to completion (the pool drains to zero as workers exit, counted via
-    // the seen-live flag). Excluded from the fingerprint — a policy toggle is not job identity.
-    // Optional for migration safety: a row written before this field defaults to keep-warm.
-    restart: v.optional(v.union(v.literal("always"), v.literal("never"))),
-    enabled: v.boolean(),
-    updatedAt: v.number(),
-  }).index("by_gpu_type", ["gpuType"]),
-
-  // In-flight cache of jobs the reconciler created. NOT the source of truth for
-  // ownership (that is the live Turing job list, matched by reserved job name) —
-  // this only bridges the window between allocating a job and seeing it appear
-  // in squeue, so we don't double-allocate while one is spinning up. Rows are
-  // pruned per-config when a current-fingerprint job dies past INFLIGHT_TTL_MS,
-  // plus an orphan sweep for rows whose gpuType no longer has a config.
-  // `fingerprint` ties a row to the exact config revision that created it (a
-  // config edit drains the old jobs instead of adopting them). `seenLive` records
-  // whether the job was ever observed in the live job list; an in-flight row that
-  // ages out with seenLive=false never became a real GPU and counts as churn.
-  gpuPoolAllocation: defineTable({
-    gpuType: v.string(),
-    jobId: v.string(),
-    fingerprint: v.string(),
-    seenLive: v.boolean(),
-    createdAt: v.number(),
-  })
-    .index("by_gpu_type", ["gpuType"])
-    .index("by_job", ["jobId"]),
-
-  // Singleton: the outcome of the most recent reconcile run, for the admin
-  // status panel. Accessed via .first() (no index).
-  gpuPoolStatus: defineTable({
-    ranAt: v.number(),
-    jobsFetchOk: v.boolean(),
-    reason: v.optional(v.string()),
-    orphansCancelled: v.number(),
-    pools: v.array(
-      v.object({
-        gpuType: v.string(),
-        desired: v.number(),
-        actual: v.number(),
-        inflight: v.number(),
-        allocated: v.number(),
-        cancelled: v.number(),
-        staleCancelled: v.number(),
-        adopted: v.number(),
-        errored: v.boolean(),
-        erroredReason: v.optional(v.string()),
-        allocateError: v.optional(v.string()),
-        churnStreak: v.number(),
-        fingerprint: v.string(),
-      }),
-    ),
-  }),
 
   userSettings: defineTable({
     userId: v.id("users"),
@@ -931,67 +861,11 @@ export default defineSchema({
   // ("defer" is NOT a verdict — not ruling is deferring; timing changes are a
   // reschedule, not a ruling.)
   //
-  // NARROWED after read-only production counts on 2026-09-27: dtsRulings and
-  // rulings each held 5 rows, with zero `batch` or `elevation` subjectType,
-  // zero `answer` verdict, and zero batchId or elevationId fields. Their
-  // by_batch and by_elevation indexes were therefore removed with the fields.
-  dtsRulings: defineTable({
-    subjectType: v.union(
-      v.literal("life"),
-      v.literal("code"),
-    ),
-    todoId: v.optional(v.id("dtsTodos")), // life subjects
-    repo: v.optional(v.string()), // code subjects…
-    externalId: v.optional(v.string()), // …(repo, externalId)
-    verdict: v.union(
-      v.literal("approve"),
-      v.literal("revise"),
-      v.literal("session"),
-      v.literal("archive"),
-    ),
-    // Who ruled. Absent is Tom, as on every row written before the delegate
-    // could rule. "delegate" marks a delegate ruling (Tom, 2026-09-21): every
-    // run treats it as his, his objection reverts it, and nothing that learns
-    // about Tom from his rulings reads it as his words.
-    ruledBy: v.optional(v.union(v.literal("tom"), v.literal("delegate"))),
-    // The delegate's ask behind a delegate ruling (a "delegate-decision"
-    // event's key), so an objection to the ask finds the ruling.
-    askId: v.optional(v.string()),
-    // One optional written note, accepted on EVERY verdict (2026-08-29): the
-    // redirect for revise (required there, enforced in ttsRulings.ts), the
-    // unarchive condition for archive, a free steering note for
-    // approve/session — the worker prompts inject all four as context.
-    sentence: v.optional(v.string()),
-    ruledAt: v.number(),
-    appliedAt: v.optional(v.number()),
-    applyResult: v.optional(v.string()),
-    // Set when the ruling was written from Tom's own words in a session turn
-    // rather than from a button (ruling 15, 2026-09-05): `inboundId` is the
-    // claudeInbound row the words came from and `quote` is the one whole
-    // sentence or line of that row the agent read as the ruling. Provenance
-    // only: it is never copied into `sentence` above (the archive return
-    // condition the page shows, the revise redirect the worker reads).
-    // Absent on every ruling recorded through the UI. The digest quotes these
-    // so a misreading is objected; the same row never rules on the same
-    // subject twice (checked in ttsRulings.ts, by the index below).
-    provenance: v.optional(
-      v.object({
-        from: v.literal("tom-words"),
-        inboundId: v.string(),
-        quote: v.string(),
-      }),
-    ),
-  })
-    .index("by_todo", ["todoId"])
-    .index("by_repo_external", ["repo", "externalId"])
-    .index("by_ruled", ["ruledAt"])
-    .index("by_provenance_inboundId", ["provenance.inboundId"])
-    .index("by_ask", ["askId"]),
-
-  // rulings: the plain-named home of dtsRulings's rows (the record's core
-  // tables, 2026-09-26). Its payload and source indexes match; legacyId and
-  // by_legacy preserve lookup by the old id. dtsRulings above empties once
-  // convex/jarvis/tables.ts has copied it.
+  // The plain-named home of the rows dtsRulings held before the rename (the
+  // record's core tables, 2026-09-26): legacyId and by_legacy keep lookup by
+  // the old id (convex/jarvis/tables.ts resolveId). dtsRulings itself is no
+  // longer declared (the table sweep, design section 12.2); its stored rows
+  // are deleted by convex/ttsMigrationsSweep.ts.
   rulings: defineTable({
     subjectType: v.union(
       v.literal("life"),
@@ -1042,7 +916,7 @@ export default defineSchema({
       }),
     ),
     // The row's _id in dtsRulings before the rename (convex/jarvis/tables.ts
-    // copies it here), so an id cited in the evidence, a Slack thread or
+    // copied it here), so an id cited in the evidence, a Slack thread or
     // a box file still finds its row. Absent on rows written after it.
     legacyId: v.optional(v.string()),
   })
@@ -1233,7 +1107,7 @@ export default defineSchema({
   // than the page's widest window: until then it is how a merged commit on the
   // page finds the pull request it came from (by its head sha), and so which
   // ruling of Tom's it carries. Tom's approval itself is a ruling in
-  // `dtsRulings`, which is why deleting a row loses nothing.
+  // `rulings`, which is why deleting a row loses nothing.
   //
   // `lastAttempt` is the one fact GitHub cannot be asked for afterwards: what
   // happened the last time the record tried to merge this. Without it the page
@@ -1290,47 +1164,6 @@ export default defineSchema({
   })
     .index("by_repo_path", ["repo", "path"])
     .index("by_repo", ["repo"]),
-
-  // vocabulary: the record's retained vocabulary publication table. Its payload
-  // and source index match; legacyId and by_legacy preserve lookup by an old id.
-  vocabulary: defineTable({
-    key: v.literal("current"),
-    version: v.string(), // the generator's own content hash of the render
-    commit: v.string(), // the WikiTom commit §12.1 was read at
-    committedAt: v.number(),
-    generatedAt: v.number(),
-    wrote: v.boolean(), // whether tts/vocabulary.json was written that night
-    // What `tts search vocabulary` prints beside the terms, posted from the
-    // Jarvis follow-up on (widen first: a row posted before it has none, and
-    // the page leaves out what the row does not carry). `section` is the spec
-    // section the vocabulary is fixed in, printed on every term's row;
-    // `counts` are the render's other sections; `tomQuestCommit` the tom.quest
-    // commit it was generated from.
-    section: v.optional(v.string()),
-    counts: v.optional(VOCABULARY_COUNTS),
-    tomQuestCommit: v.optional(v.string()),
-    terms: v.array(v.object({
-      term: v.string(),
-      kind: v.string(),
-      definition: v.string(),
-      specSection: v.optional(v.string()), // the §  the term is defined in
-      codeSymbol: v.optional(v.string()),
-      related: v.array(v.string()),
-      refusedFor: v.optional(v.string()), // the word this one is refused in favour of
-    })),
-    // One per thing the spec and the code do not both say. Each is Tom's to
-    // settle with one ruling, so the rows carry what each source says verbatim.
-    disagreements: v.array(v.object({
-      code: v.string(), // the generator's own class, e.g. "D5"
-      subject: v.string(),
-      fix: v.string(),
-      rows: v.array(v.object({ label: v.string(), where: v.string(), text: v.string() })),
-    })),
-    // A pre-rename id, so an id cited in the evidence, a Slack thread or a box
-    // file still finds its row. Absent on rows written after it.
-    legacyId: v.optional(v.string()),
-  }).index("by_key", ["key"])
-    .index("by_legacy", ["legacyId"]),
 
   // ── Claude Code session surface ──────────────────────────────────────────────
   // CANONICAL DESIGN HOME: WikiTom tts/spec.md §20 (design ratified 2026-08-28;
