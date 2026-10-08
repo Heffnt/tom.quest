@@ -5,7 +5,7 @@
 // JARVIS_KEY ?? TTS_WORKER_KEY until the morning key rotation)"). The header
 // is X-Jarvis-Key; X-TTS-Key is read too until the box has switched, and goes
 // with the /tts/ prefix (convex/http.ts, the prefix loop). A route that needs
-// a different key (Tom's own ruling door, the sign-off door) keeps its own
+// a different key (Tom's own ruling door) keeps its own
 // check; this one is for what the box posts as itself.
 
 /** The header the box sends. */

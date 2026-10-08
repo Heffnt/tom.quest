@@ -320,7 +320,7 @@ describe("POST /tts/ask — the delegate's record", () => {
       {
         title: "Delegate decision",
         body: `${body().question}\n${body().decision}`,
-        url: "/intent#decision-3f9c1a22",
+        url: "/tts",
       },
     ]);
     // The same askId again writes no second row, so no second push.
@@ -656,7 +656,7 @@ describe("POST /tts/ask — a decision by Tom", () => {
         .filter((job) => job.name.includes("pushSend"))
         .map((job) => (job.args[0] as { url: string }).url),
     );
-    expect(pushes).toEqual(["/intent#decision-d0000001"]);
+    expect(pushes).toEqual(["/tts"]);
   });
 
   it("passes neither the attended check nor the cap, and does not spend the caller's cap", async () => {

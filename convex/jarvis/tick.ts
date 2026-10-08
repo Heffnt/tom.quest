@@ -6,8 +6,8 @@
 // record-tick job (Jarvis worker/jobs/record-tick.mjs, every minute) POSTs
 // /jarvis/tick, which starts each task whose cadence has come round. A task's
 // last outcome is its own job-ok or job-failed row (provenance.job and
-// subject `tick:<name>`), so "when did the code mirror last refresh" is a
-// read of the record, a failing task is a failure line in the digest like any box
+// subject `tick:<name>`), so each task's last refresh is a read of the record;
+// a failing task is a failure line in the digest like any box
 // job's, and a failing task is retried at its cadence, not every minute.
 //
 // The tasks, and what each keeps alive:
@@ -15,7 +15,6 @@
 //                   serverHealth row, fresh for 90 s): every minute.
 //   pull-requests   the open pull requests mirror, and the landing of every
 //                   approved one whose gate turned green: every 5 minutes.
-//   code-mirror     tom.quest's vqc/todos.yaml beside the life todos: 6 h.
 
 import { v } from "convex/values";
 import { httpAction, internalAction, internalMutation, type QueryCtx } from "../_generated/server";
@@ -43,7 +42,6 @@ type Task = {
 const TICK_TASKS: Record<string, Task> = {
   "turing-health": { when: { everyMs: MINUTE }, timeoutMs: ACTION_LIMIT_MS, run: { action: internal.serverHealth.pollTuring } },
   "pull-requests": { when: { everyMs: 5 * MINUTE }, timeoutMs: ACTION_LIMIT_MS, run: { action: internal.observeMerge.refreshOpenPulls } },
-  "code-mirror": { when: { everyMs: 6 * 60 * MINUTE }, timeoutMs: ACTION_LIMIT_MS, run: { action: internal.ttsSync.refreshMirror } },
 };
 
 /** The ticks' own slack: a task whose last run was a few seconds short of its

@@ -614,16 +614,9 @@ export async function insertSession(
     const consumed = await liveCodeSessionRulings(ctx);
     const subjects = [];
     for (const r of consumed) {
-      const mirrored = await ctx.db
-        .query("dtsCodeTodoMirror")
-        .withIndex("by_repo_external", (q) =>
-          q.eq("repo", r.repo!).eq("externalId", r.externalId!),
-        )
-        .first();
       subjects.push({
         repo: r.repo!,
         externalId: r.externalId!,
-        statement: mirrored?.statement,
         sentence: r.sentence,
       });
     }

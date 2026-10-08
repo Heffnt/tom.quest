@@ -1,13 +1,9 @@
 // THE ONE SPELLING of a vocabulary row, as `tts search define` and `tts search
 // vocabulary` print it.
 //
-// Two readers print the same rows: the box's search CLI (the Jarvis
-// repository's worker/jobs/search-lib.mjs), which an agent runs, and the
-// /vocabulary page, which Tom reads to see exactly what that agent sees. A
-// formatter written twice drifts the first time one side adds a field, and the
-// page would then be showing Tom a row no agent was ever shown. So both import
-// this file, and the rows are pinned in __tests__/vocabulary-rows.test.mjs to
-// the CLI's real output.
+// The box's search CLI (the Jarvis repository's worker/jobs/search-lib.mjs)
+// imports this formatter. The rows are pinned in
+// __tests__/vocabulary-rows.test.mjs to the CLI's real output.
 //
 // PURE, like every module here: no I/O, and a value is made one line and
 // stripped of anything credential-shaped (./redact.mjs) before it is printed.

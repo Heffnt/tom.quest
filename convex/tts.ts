@@ -7,10 +7,8 @@ import {
 } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
-import { internal } from "./_generated/api";
 import { requireTom, requireTomOrAgent } from "./authRoles";
 import {
-  CODE_TODO_REPOS,
   READINESS,
   goalCheckable,
   nyCalendarDayKey,
@@ -20,8 +18,8 @@ import { redactSecrets } from "../shared/redact.mjs";
 import { ZONE } from "../shared/clock.mjs";
 import { eitherId, resolveId, withPlainTodoIds } from "./jarvis/tables";
 
-// TTS (Delegated Todo System) — life-todo store, instrumentation, daily queue,
-// and the code-todo mirror. Spec: WikiTom tts/spec.md. Everything Tom-facing is
+// TTS (Delegated Todo System) — life-todo store, instrumentation and daily queue.
+// Spec: WikiTom tts/spec.md. Everything Tom-facing is
 // Tom-gated (forge.ts pattern); everything the Jarvis Box or crons touch goes
 // through internal functions (http.ts routes are key-authed with TTS_WORKER_KEY).
 
@@ -89,38 +87,6 @@ export const listTodos = query({
   handler: async (ctx) => {
     await requireTomOrAgentId(ctx);
     return await ctx.db.query("todos").collect();
-  },
-});
-
-/**
- * The mirror rows of the repos that still keep a code-todo file
- * (ttsShared CODE_TODO_REPOS). A repo taken OFF that list leaves its rows in
- * the table as records — ComplexMultiTrigger's 40, frozen at the last refresh
- * before ruling 70 moved its todos into TTS — and the evals still read them
- * by (repo, externalId) to rebuild a past code ruling's input, so they cannot
- * be deleted. What must not happen is a frozen "open" row reaching the page
- * or the planner as work that is still open: the refresh no longer visits
- * its repo, so nothing would ever close it. Every live reader goes through
- * here.
- */
-async function liveMirrorRows(ctx: QueryCtx): Promise<Doc<"dtsCodeTodoMirror">[]> {
-  const rows: Doc<"dtsCodeTodoMirror">[] = [];
-  for (const repo of Object.keys(CODE_TODO_REPOS)) {
-    rows.push(
-      ...(await ctx.db
-        .query("dtsCodeTodoMirror")
-        .withIndex("by_repo_external", (q) => q.eq("repo", repo))
-        .collect()),
-    );
-  }
-  return rows;
-}
-
-export const listMirror = query({
-  args: {},
-  handler: async (ctx) => {
-    await requireTomOrAgentId(ctx);
-    return await liveMirrorRows(ctx);
   },
 });
 
@@ -847,84 +813,5 @@ export const internalListTodos = internalQuery({
   args: {},
   handler: async (ctx) => {
     return await ctx.db.query("todos").collect();
-  },
-});
-
-// ── The mirror's internal read ─────────────────────────────────────────────
-// Every Tom-facing query in this file is requireTomId-gated, and a timed task
-// has no identity, so it cannot call one. This is the internal twin.
-
-export const internalListMirror = internalQuery({
-  args: {},
-  handler: async (ctx) => {
-    return await liveMirrorRows(ctx);
-  },
-});
-
-// ── Internal: code-todo mirror upserts (from ttsSync.refreshMirror) ──────────
-export const internalReplaceMirror = internalMutation({
-  args: {
-    repo: v.string(),
-    rows: v.array(
-      v.object({
-        externalId: v.string(),
-        tier: v.string(),
-        status: v.string(),
-        statement: v.string(),
-        url: v.string(),
-      }),
-    ),
-  },
-  handler: async (ctx, { repo, rows }) => {
-    const now = Date.now();
-    const existing = await ctx.db
-      .query("dtsCodeTodoMirror")
-      .withIndex("by_repo_external", (q) => q.eq("repo", repo))
-      .collect();
-    const byId = new Map(existing.map((r) => [r.externalId, r]));
-    const seen = new Set<string>();
-    for (const row of rows) {
-      seen.add(row.externalId);
-      const prior = byId.get(row.externalId);
-      if (prior) {
-        await ctx.db.patch(prior._id, { ...row, syncedAt: now });
-      } else {
-        await ctx.db.insert("dtsCodeTodoMirror", { repo, ...row, syncedAt: now });
-      }
-    }
-    // A row missing from the file was closed-and-rewritten or renamed upstream;
-    // the mirror only reflects, so drop it (the repo is the system of record —
-    // nothing-is-lost applies to LIFE todos, not to this display cache).
-    for (const prior of existing) {
-      if (!seen.has(prior.externalId)) await ctx.db.delete(prior._id);
-    }
-
-    // A schema-v2 CODE GOAL says "that upstream todo is closed" — the mirror is
-    // the only thing that can ever say so, and this is the only place the
-    // mirror changes. Without this the migration mints active goals nothing can
-    // complete, each of which blocks every dependent forever (ttsShared.isReady)
-    // and never leaves Tom's inventory. An ABSENT mirror row is NOT evidence of
-    // completion (memberProgress' rule: it may be a closed todo or an id that
-    // never matched); only an explicit "closed" status closes the goal.
-    // The ComplexMultiTrigger goals the two batch migrations wrote this way are
-    // no longer code goals: CMT's registry is retired (ruling 70), and
-    // ttsMigrations.internalConvertClosedUpstreamGoals turns each into a plain
-    // goal whose condition is the entry's own completion test, with no code
-    // subject, so this sweep never reaches them.
-    const closed = new Set(
-      rows.filter((r) => r.status === "closed").map((r) => r.externalId),
-    );
-    if (closed.size > 0) {
-      const all = await ctx.db.query("todos").collect();
-      for (const goal of all) {
-        if (goal.kind !== "goal" || goal.status !== "active") continue;
-        if (goal.codeRepo !== repo || goal.codeExternalId === undefined) continue;
-        if (!closed.has(goal.codeExternalId)) continue;
-        await applyStatusChange(ctx, goal, {
-          status: "done",
-          note: `${repo} ${goal.codeExternalId} closed upstream`,
-        });
-      }
-    }
   },
 });

@@ -16,16 +16,12 @@ import {
 import {
   NARROW_LIST,
   ttsPrepDay,
-  VOCABULARY_COUNT_NAMES,
 } from "./ttsShared";
 import { isNarrowListId } from "./ttsShared";
 import { RUN_END_REASONS, type RunEndReason } from "./agents";
 import { auditVerdictOf, mergedOnMain } from "./ttsMerge";
 import { isModelOfTomPath, MODEL_OF_TOM_LAYER_NAMES } from "./ttsSkills";
 import { isRepoRulesPath } from "./ttsContext";
-import { NO_SIGNOFF, parseProposal } from "./ttsSignoff";
-import { INTENT_SOURCES_MAX, isIntentSourcePath } from "./intent";
-import { VOCABULARY_TERMS_MAX } from "./vocabulary";
 // The door check's complaints are model-written text that lands where Tom
 // reads it, so it goes through the one redaction on the way in — the same
 // import convex/ttsMerge.ts makes for the same reason.
@@ -587,10 +583,8 @@ http.route({ path: "/tts/job-ok", method: "POST", handler: ttsJobOk });
 // POST /tts/calendar-event — the Jarvis Box's path through the ONE write door
 // to Tom's Google Calendar (convex/ttsCalendarWrite.ts owns the door; this
 // route only carries the traffic). Body: { title, start, end, description?,
-// location?, recurrence?, calendarId?, guests? } — start/end epoch ms.
-// `guests` makes the event a message in Tom's name: the door creates it only
-// on his matching sign-off (convex/ttsSignoff.ts), and answers 403 without
-// one. The way to get one is POST /tts/send-proposal, below.
+// location?, recurrence?, calendarId? } — start/end epoch ms. The record no
+// longer has a send-in-Tom's-name path, so guest invitations are refused.
 const ttsCalendarEvent = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
@@ -607,6 +601,13 @@ const ttsCalendarEvent = httpAction(async (ctx, request) => {
   if (typeof b.start !== "number" || typeof b.end !== "number") {
     return jsonResponse(400, { error: "start and end (epoch ms) required" });
   }
+  // An event with guests sends each an invitation from Tom's calendar, a
+  // message in his name, which only his sign-off allowed; with the sign-off
+  // removed the route refuses it rather than create the event without them,
+  // which would drop what the caller asked for without saying so.
+  if (b.guests !== undefined) {
+    return jsonResponse(400, { error: "guests are not supported by the calendar-event route" });
+  }
   const recurrence = Array.isArray(b.recurrence)
     ? b.recurrence.filter((r): r is string => typeof r === "string")
     : undefined;
@@ -621,16 +622,12 @@ const ttsCalendarEvent = httpAction(async (ctx, request) => {
         location: typeof b.location === "string" ? b.location : undefined,
         recurrence,
         calendarId: typeof b.calendarId === "string" ? b.calendarId : undefined,
-        // internalCreateEvent's validator refuses a guests that is not an
-        // array of strings, and the catch below answers that 400.
-        guests: b.guests as string[] | undefined,
       },
     );
     return jsonResponse(200, { ok: true, ...created });
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);
-    // Kept: 403 tells the caller its event was well formed and Tom has not signed it, so it proposes rather than retries.
-    return jsonResponse(error.includes(NO_SIGNOFF) ? 403 : 400, { error });
+    return jsonResponse(400, { error });
   }
 });
 
@@ -640,53 +637,6 @@ http.route({
   handler: ttsCalendarEvent,
 });
 
-// POST /tts/send-proposal — an agent's message to a human other than Tom, put
-// in front of him to sign (Tom, 2026-09-25: agents "can also send messages in
-// my name after i have reviewed the content and explicitily signed off").
-// Body, one of two shapes (convex/ttsSignoff.ts parseProposal):
-//   { channel: "slack:<conversation id>", recipient, text, why?, agentId? }
-//   { channel: "calendar", event: { title, start, end, guests, description?,
-//     location?, recurrence? }, why?, agentId? }
-// It writes one "send-proposal" row and opens one needs-you reply under the
-// digest that names the recipient and the channel, never the text. Nothing
-// else: no sign-off (the worker key cannot write one; only his press of "sign and
-// send" on /tts does) and no send (that happens from Convex once he has
-// signed, and only then). The answer names where he signs.
-//
-// Kept, not deletable: without it the only paths an agent has to another
-// human are ones Tom never reads first. It is half of the wall for I5; the
-// check in ttsSignoff.deliverAsTom is the other half.
-const ttsSendProposal = httpAction(async (ctx, request) => {
-  const denied = ttsAuth(request);
-  if (denied) return denied;
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return jsonResponse(400, { error: "invalid JSON body" });
-  }
-  const b = (body ?? {}) as Record<string, unknown>;
-  if (b.agentId !== undefined && !validAgentId(b.agentId)) {
-    return jsonResponse(400, { error: "agentId, when given, is an agent id (claude|codex):(laptop|box):<id>" });
-  }
-  const parsed = parseProposal(b);
-  if ("error" in parsed) return jsonResponse(400, { error: parsed.error });
-  const { proposalId, sha256 } = await ctx.runMutation(internal.ttsSignoff.internalPropose, {
-    ...parsed.proposal,
-    ...(typeof b.agentId === "string" ? { agentId: b.agentId } : {}),
-  });
-  return jsonResponse(200, {
-    ok: true,
-    proposalId,
-    sha256,
-    text: parsed.proposal.text,
-    recipient: parsed.proposal.recipient,
-    channel: parsed.proposal.channel,
-    signAt: "https://tom.quest/tts",
-  });
-});
-
-http.route({ path: "/tts/send-proposal", method: "POST", handler: ttsSendProposal });
 
 // ── POST /slack/events — Slack output-channel replies and reactions ───────
 // This receives Slack's push for Tom's threaded replies and reactions in the
@@ -1091,9 +1041,8 @@ http.route({ path: "/tts/state", method: "GET", handler: ttsState });
 
 // ── TTS code-todo ruling loop (spec §5.3) ────────────────────────────────────
 // Same TTS_WORKER_KEY path: the worker reads back Tom's pending rulings and
-// reports each application. The worker never rules — recordCodeRuling is
-// Tom-gated in ttsCode.ts. (POST /tts/code-briefs, the retired brief pass's
-// pen, went on 2026-09-26: no caller since the pass was retired 2026-09-22.)
+// reports each application. The worker never rules — recordRuling remains
+// Tom-gated in ttsRulings.ts.
 
 // GET /tts/rulings — the rulings a box job should act on (unapplied and not
 // superseded by a newer ruling on the same subject), from the unified
@@ -1121,7 +1070,7 @@ http.route({ path: "/tts/rulings", method: "GET", handler: ttsRulingsFeed });
 
 // POST /tts/code-ruling-applied — the worker's apply report. Body: { id,
 // result } where result is a commit sha / PR url / error text.
-const ttsCodeRulingApplied = httpAction(async (ctx, request) => {
+const ttsRulingApplied = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
   let body: unknown;
@@ -1153,7 +1102,7 @@ const ttsCodeRulingApplied = httpAction(async (ctx, request) => {
 http.route({
   path: "/tts/ruling-applied",
   method: "POST",
-  handler: ttsCodeRulingApplied,
+  handler: ttsRulingApplied,
 });
 
 // POST /tts/ruling is POST /jarvis/ruling's old spelling (convex/jarvis/rulings.ts),
@@ -1583,11 +1532,10 @@ const ttsMerge = httpAction(async (ctx, request) => {
 });
 http.route({ path: "/tts/merge", method: "POST", handler: ttsMerge });
 
-// GET /tts/planner-context — everything the planner's prepare and brief passes
-// and the delegate's fallback work from: all life todos (their graph fields,
-// `needs` among them, included), the code-todo mirror, the code briefs, Tom's
-// recent rulings, the writing standard, the vocabulary, the session repo names
-// and the server's clock.
+// GET /tts/planner-context — everything the planner's prepare pass and the
+// delegate's fallback work from: all life todos (their graph fields, needs
+// among them, included), Tom's recent rulings, the writing standard, the
+// session repo names and the server's clock.
 //
 // WHY THE WRITING STANDARD RIDES THIS PAYLOAD: the planner is Node ESM on a box
 // that never loads TypeScript — it cannot import the text and it cannot read a
@@ -1806,202 +1754,6 @@ const ttsRepoRules = httpAction(async (ctx, request) => {
 });
 
 http.route({ path: "/tts/repo-rules", method: "POST", handler: ttsRepoRules });
-
-// POST /tts/intent-sources — the files his intent is written in that no other
-// door carries, replaced whole (convex/intent.ts).
-//
-// A THIRD DOOR, for the reason there are already two: the /intent page reads
-// the evidence behind every model-of-tom line, `vqc/steering.yaml`, and the
-// dated notes of `tts/spec.md` and `vqc/adoption.md` that quote his rulings.
-// None of those is a model-of-tom page and none is an `AGENTS.md`, so neither
-// existing door takes them — and widening one of those two to take them would
-// make a night that could not read the spec cost every run its base prompt.
-// This door's failure costs a page some rows and nothing else.
-//
-// TWO REPOSITORIES IN ONE POST, unlike /tts/repo-rules: these files are not a
-// repository's rules, they are the places one thing is written, and the page
-// wants them together or not at all.
-const ttsIntentSources = httpAction(async (ctx, request) => {
-  const denied = ttsAuth(request);
-  if (denied) return denied;
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return jsonResponse(400, { error: "invalid JSON body" });
-  }
-  const b = (body ?? {}) as Record<string, unknown>;
-  if (!Array.isArray(b.files) || b.files.length === 0) {
-    return jsonResponse(400, { error: "files (non-empty array) required" });
-  }
-  if (b.files.length > INTENT_SOURCES_MAX) {
-    return jsonResponse(400, { error: `at most ${INTENT_SOURCES_MAX} files per post — got ${b.files.length}` });
-  }
-  const files: { repo: string; path: string; body: string; bytes: number; commit: string; syncedAt: number }[] = [];
-  for (let i = 0; i < b.files.length; i++) {
-    const f = b.files[i] as Record<string, unknown> | null;
-    if (typeof f !== "object" || f === null) {
-      return jsonResponse(400, { error: `files[${i}] must be an object` });
-    }
-    if (typeof f.repo !== "string" || f.repo.trim() === "") {
-      return jsonResponse(400, { error: `files[${i}].repo (a session repo name) required` });
-    }
-    if (typeof f.path !== "string" || !isIntentSourcePath(f.path)) {
-      return jsonResponse(400, { error: `files[${i}].path must be a relative path inside the repo` });
-    }
-    if (typeof f.body !== "string" || f.body.trim() === "") {
-      return jsonResponse(400, { error: `files[${i}].body (non-empty string) required` });
-    }
-    if (typeof f.bytes !== "number" || !Number.isSafeInteger(f.bytes) || f.bytes < 0) {
-      return jsonResponse(400, { error: `files[${i}].bytes (nonnegative integer) required` });
-    }
-    if (typeof f.commit !== "string" || !/^[0-9a-f]{40}$/.test(f.commit)) {
-      return jsonResponse(400, { error: `files[${i}].commit (40 hex characters) required` });
-    }
-    if (typeof f.syncedAt !== "number" || !Number.isFinite(f.syncedAt)) {
-      return jsonResponse(400, { error: `files[${i}].syncedAt (epoch ms) required` });
-    }
-    files.push({
-      repo: f.repo, path: f.path, body: f.body, bytes: f.bytes, commit: f.commit, syncedAt: f.syncedAt,
-    });
-  }
-  try {
-    const result = await ctx.runMutation(internal.intent.internalReplaceIntentSources, { files });
-    return jsonResponse(200, { ok: true, ...result });
-  } catch (e) {
-    return jsonResponse(400, { error: e instanceof Error ? e.message : String(e) });
-  }
-});
-
-http.route({ path: "/tts/intent-sources", method: "POST", handler: ttsIntentSources });
-
-// POST /tts/vocabulary — the vocabulary as the nightly's graph step last
-// rendered it, and the disagreements it refused to write over
-// (convex/vocabulary.ts says why the record holds this and not the file).
-const ttsVocabularyPost = httpAction(async (ctx, request) => {
-  const denied = ttsAuth(request);
-  if (denied) return denied;
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return jsonResponse(400, { error: "invalid JSON body" });
-  }
-  const b = (body ?? {}) as Record<string, unknown>;
-  if (typeof b.version !== "string" || b.version.trim() === "") {
-    return jsonResponse(400, { error: "version (the render's own hash) required" });
-  }
-  if (typeof b.commit !== "string" || !/^[0-9a-f]{40}$/.test(b.commit)) {
-    return jsonResponse(400, { error: "commit (40 hex characters) required" });
-  }
-  if (typeof b.committedAt !== "number" || !Number.isFinite(b.committedAt)) {
-    return jsonResponse(400, { error: "committedAt (epoch ms) required" });
-  }
-  if (typeof b.generatedAt !== "number" || !Number.isFinite(b.generatedAt)) {
-    return jsonResponse(400, { error: "generatedAt (epoch ms) required" });
-  }
-  // WROTE IS A FACT OF THE NIGHT, not a default: it says whether
-  // tts/vocabulary.json exists at this commit, which is the whole difference
-  // between a settled vocabulary and one waiting on him.
-  if (typeof b.wrote !== "boolean") {
-    return jsonResponse(400, { error: "wrote (boolean) required" });
-  }
-  // The header fields `tts search vocabulary` prints beside the terms. Each is
-  // optional while the nightly that sends them rolls out; one that is sent
-  // must be well formed, or the page would print a header no agent was shown.
-  if (b.section !== undefined && (typeof b.section !== "string" || b.section.trim() === "")) {
-    return jsonResponse(400, { error: "section, when sent, is the spec section (non-empty string)" });
-  }
-  if (b.tomQuestCommit !== undefined && (typeof b.tomQuestCommit !== "string" || !/^[0-9a-f]{40}$/.test(b.tomQuestCommit))) {
-    return jsonResponse(400, { error: "tomQuestCommit, when sent, is 40 hex characters" });
-  }
-  let counts: Record<(typeof VOCABULARY_COUNT_NAMES)[number], number> | undefined;
-  if (b.counts !== undefined) {
-    const c = b.counts as Record<string, unknown> | null;
-    if (typeof c !== "object" || c === null) {
-      return jsonResponse(400, { error: `counts, when sent, carries ${VOCABULARY_COUNT_NAMES.join(", ")}` });
-    }
-    const bad = VOCABULARY_COUNT_NAMES.find((name) => !Number.isSafeInteger(c[name]) || (c[name] as number) < 0);
-    if (bad !== undefined) {
-      return jsonResponse(400, { error: `counts.${bad} (nonnegative integer) required` });
-    }
-    counts = Object.fromEntries(VOCABULARY_COUNT_NAMES.map((name) => [name, c[name] as number])) as typeof counts;
-  }
-  if (!Array.isArray(b.terms) || b.terms.length === 0) {
-    return jsonResponse(400, { error: "terms (non-empty array) required" });
-  }
-  if (b.terms.length > VOCABULARY_TERMS_MAX) {
-    return jsonResponse(400, { error: `at most ${VOCABULARY_TERMS_MAX} terms per post — got ${b.terms.length}` });
-  }
-  const terms: {
-    term: string; kind: string; definition: string;
-    specSection?: string; codeSymbol?: string; related: string[]; refusedFor?: string;
-  }[] = [];
-  for (let i = 0; i < b.terms.length; i++) {
-    const t = b.terms[i] as Record<string, unknown> | null;
-    if (typeof t !== "object" || t === null || typeof t.term !== "string" || t.term.trim() === "") {
-      return jsonResponse(400, { error: `terms[${i}].term (non-empty string) required` });
-    }
-    if (typeof t.kind !== "string" || typeof t.definition !== "string") {
-      return jsonResponse(400, { error: `terms[${i}].kind and .definition (strings) required` });
-    }
-    if (!Array.isArray(t.related) || t.related.some((name) => typeof name !== "string")) {
-      return jsonResponse(400, { error: `terms[${i}].related (array of strings) required` });
-    }
-    // The generator writes null where a word has no section, no symbol or no
-    // replacement. Null and absent are the same fact here — the field is a
-    // string or it is not there — so the nulls are dropped rather than stored.
-    terms.push({
-      term: t.term,
-      kind: t.kind,
-      definition: t.definition,
-      ...(typeof t.specSection === "string" && t.specSection !== "" ? { specSection: t.specSection } : {}),
-      ...(typeof t.codeSymbol === "string" && t.codeSymbol !== "" ? { codeSymbol: t.codeSymbol } : {}),
-      related: t.related as string[],
-      ...(typeof t.refusedFor === "string" && t.refusedFor !== "" ? { refusedFor: t.refusedFor } : {}),
-    });
-  }
-  if (!Array.isArray(b.disagreements)) {
-    return jsonResponse(400, { error: "disagreements (array) required" });
-  }
-  const disagreements: { code: string; subject: string; fix: string; rows: { label: string; where: string; text: string }[] }[] = [];
-  for (let i = 0; i < b.disagreements.length; i++) {
-    const d = b.disagreements[i] as Record<string, unknown> | null;
-    if (typeof d !== "object" || d === null || typeof d.code !== "string"
-      || typeof d.subject !== "string" || typeof d.fix !== "string" || !Array.isArray(d.rows)) {
-      return jsonResponse(400, { error: `disagreements[${i}] must carry code, subject, fix and rows` });
-    }
-    const rows: { label: string; where: string; text: string }[] = [];
-    for (const row of d.rows) {
-      const r = row as Record<string, unknown> | null;
-      if (typeof r !== "object" || r === null || typeof r.label !== "string"
-        || typeof r.where !== "string" || typeof r.text !== "string") {
-        return jsonResponse(400, { error: `disagreements[${i}].rows must carry label, where and text` });
-      }
-      rows.push({ label: r.label, where: r.where, text: r.text });
-    }
-    disagreements.push({ code: d.code, subject: d.subject, fix: d.fix, rows });
-  }
-  try {
-    const result = await ctx.runMutation(internal.vocabulary.internalReplaceVocabulary, {
-      version: b.version,
-      commit: b.commit,
-      committedAt: b.committedAt,
-      generatedAt: b.generatedAt,
-      wrote: b.wrote,
-      ...(typeof b.section === "string" ? { section: b.section } : {}),
-      ...(counts === undefined ? {} : { counts }),
-      ...(typeof b.tomQuestCommit === "string" ? { tomQuestCommit: b.tomQuestCommit } : {}),
-      terms,
-      disagreements,
-    });
-    return jsonResponse(200, { ok: true, version: b.version, ...result });
-  } catch (e) {
-    return jsonResponse(400, { error: e instanceof Error ? e.message : String(e) });
-  }
-});
-
-http.route({ path: "/tts/vocabulary", method: "POST", handler: ttsVocabularyPost });
 
 // ── The nightly job's doors (convex/ttsNightly.ts) ───────────────────────────
 

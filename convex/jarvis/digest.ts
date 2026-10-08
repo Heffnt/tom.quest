@@ -22,7 +22,7 @@
 // the todos it showed as surfaced.
 //
 // NEEDS-YOU IS A REPLY UNDER THAT DAY'S DIGEST, one per thing only Tom can
-// settle. A producer (POST /tts/needs-tom, a sign-off proposal) records
+// settle. A producer (POST /tts/needs-tom) records
 // `needs-you-opened` with the reply's text; the box's same job posts every
 // opened one not yet posted as a reply in the newest digest's thread and
 // records `needs-you-posted`. His reply in the thread answers the needs-you

@@ -15,12 +15,8 @@
 // mirror refresh is scheduled, so the new event shows on /tts within the ICS
 // feed's own propagation delay rather than waiting for the hourly cron.
 //
-// AN EVENT WITH GUESTS IS A MESSAGE IN TOM'S NAME: Google sends each guest an
-// invitation from him. So `guests` is accepted only through the sign-off gate
-// (convex/ttsSignoff.ts deliverAsTom): the door derives the invitation's text
-// from the event it is about to create and inserts it only when a sign-off of
-// Tom's matches that text, the guests and the "calendar" channel. An event
-// with no guests reaches nobody but him and needs none.
+// This door creates events only for Tom. Guest invitations would message people
+// in his name, so the route refuses them.
 
 import { v } from "convex/values";
 import { internalAction, internalMutation } from "./_generated/server";
@@ -28,7 +24,6 @@ import type { ActionCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { logEvent } from "./tts";
 import { ZONE } from "../shared/clock.mjs";
-import { CALENDAR_CHANNEL, calendarRecipient, deliverAsTom, DeliveryRefused, invitationText } from "./ttsSignoff";
 
 export type CreateEventArgs = {
   title: string;
@@ -40,8 +35,6 @@ export type CreateEventArgs = {
   // Expanded by Google in the event's time zone (America/New_York).
   recurrence?: string[];
   calendarId?: string; // "primary" only (Tom's own calendar); see ONE_CALENDAR
-  // Email addresses Google invites. Present only through the sign-off gate.
-  guests?: string[];
 };
 
 /** THE ONLY CALENDAR THIS DOOR WRITES TO: Tom's own. The token can create
@@ -68,9 +61,6 @@ export function buildEventBody(args: CreateEventArgs) {
       timeZone: ZONE,
     },
     recurrence: args.recurrence,
-    ...(args.guests !== undefined && args.guests.length > 0
-      ? { attendees: args.guests.map((email) => ({ email: email.trim() })) }
-      : {}),
   };
 }
 
@@ -83,29 +73,12 @@ export const internalCreateEvent = internalAction({
     location: v.optional(v.string()),
     recurrence: v.optional(v.array(v.string())),
     calendarId: v.optional(v.string()),
-    guests: v.optional(v.array(v.string())),
-    // The sign-off proposal this event delivers (convex/ttsSignoff.ts
-    // internalSendProposal), marked delivering when its sign-off is claimed.
-    proposalId: v.optional(v.id("dtsEvents")),
   },
-  handler: async (ctx, { proposalId, ...args }): Promise<{ id: string; htmlLink: string }> => {
+  handler: async (ctx, args): Promise<{ id: string; htmlLink: string }> => {
     if (args.calendarId !== undefined && args.calendarId !== ONE_CALENDAR) {
       throw new Error(`calendar ${args.calendarId} refused: this door writes only to Tom's primary calendar`);
     }
-    const guests = (args.guests ?? []).filter((g) => g.trim() !== "");
-    if (guests.length > 0) {
-      return await deliverAsTom(
-        ctx,
-        {
-          text: invitationText({ ...args, guests }),
-          recipient: calendarRecipient(guests),
-          channel: CALENDAR_CHANNEL,
-          proposalId,
-        },
-        async () => await createEvent(ctx, { ...args, guests }),
-      );
-    }
-    return await createEvent(ctx, { ...args, guests: undefined });
+    return await createEvent(ctx, args);
   },
 });
 
@@ -117,15 +90,12 @@ async function createEvent(
   const clientSecret = process.env.GOOGLE_CALENDAR_CLIENT_SECRET;
   const refreshToken = process.env.GOOGLE_CALENDAR_REFRESH_TOKEN;
   if (!clientId || !clientSecret || !refreshToken) {
-    throw new DeliveryRefused(
+    throw new Error(
       "Calendar write is not configured — GOOGLE_CALENDAR_CLIENT_ID / _CLIENT_SECRET / _REFRESH_TOKEN missing from the Convex env (mint them with worker/jobs/calendar-auth.mjs)",
     );
   }
 
-  // EVERYTHING BEFORE THE INSERT IS ISSUED sent nothing: a token that could
-  // not be had (a network error, a refusal, an unreadable answer) or a body
-  // that could not be built is a definite refusal, and gives the sign-off
-  // back. Only a failure after the insert request went out may have sent.
+  // Everything before the insert request is issued sends nothing.
   let accessToken: string;
   let body: string;
   try {
@@ -147,14 +117,11 @@ async function createEvent(
     accessToken = token;
     body = JSON.stringify(buildEventBody(args));
   } catch (e) {
-    throw new DeliveryRefused(`before the calendar insert: ${e instanceof Error ? e.message : String(e)}`);
+    throw new Error(`before the calendar insert: ${e instanceof Error ? e.message : String(e)}`);
   }
 
-  // sendUpdates=all: a guest is invited by the email Google sends, which is
-  // the message Tom signed. Without guests there is nobody to send it to.
-  const invite = args.guests !== undefined && args.guests.length > 0 ? "?sendUpdates=all" : "";
   const res = await fetch(
-    `https://www.googleapis.com/calendar/v3/calendars/${ONE_CALENDAR}/events${invite}`,
+    `https://www.googleapis.com/calendar/v3/calendars/${ONE_CALENDAR}/events`,
     {
       method: "POST",
       headers: {
@@ -165,10 +132,8 @@ async function createEvent(
     },
   );
   if (!res.ok) {
-    // A 4xx is Google's refusal: no event, no invitation. A 5xx may have
-    // come after the insert, so it keeps the sign-off's claim.
     const said = `calendar insert -> HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`;
-    throw res.status >= 400 && res.status < 500 ? new DeliveryRefused(said) : new Error(said);
+    throw new Error(said);
   }
   const created = (await res.json()) as { id: string; htmlLink: string };
 

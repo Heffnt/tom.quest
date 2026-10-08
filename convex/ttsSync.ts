@@ -1,15 +1,13 @@
 "use node";
 
 import { v } from "convex/values";
-import { load as loadYaml } from "js-yaml";
 import { internalAction } from "./_generated/server";
 import type { ActionCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
-import { CODE_TODO_PATH, CODE_TODO_REPOS, SLACK_SUBJECT, replyRouteLive, type SlackSubject } from "./ttsShared";
+import { SLACK_SUBJECT, replyRouteLive, type SlackSubject } from "./ttsShared";
 
-// Convex actions that reach outside Convex: the one Slack door, and the
-// GitHub vqc/todos.yaml mirror refresh (a record-tick task, convex/jarvis/tick.ts).
-// Spec: WikiTom tts/spec.md §7, §5.3.
+// Convex actions that reach outside Convex: the one Slack door.
+// Spec: WikiTom tts/spec.md §7.
 
 const SLACK_POST_URL = "https://slack.com/api/chat.postMessage";
 
@@ -32,12 +30,6 @@ const SLACK_POST_URL = "https://slack.com/api/chat.postMessage";
 // the digest is the one message Tom's morning depends on. The failure row is
 // written once, after the retry, and says how many attempts it took.
 //
-// EXCEPT A MESSAGE IN TOM'S NAME (`once`): a dropped connection may have
-// dropped only Slack's answer, and a second attempt would then post his words
-// twice. Such a send tries once, and says whether Slack itself refused it
-// (`refused`: Slack answered ok:false, so nothing was posted) or the outcome
-// is unknown, which the sign-off gate (convex/ttsSignoff.ts deliverAsTom)
-// reads to decide whether the claim may be released.
 type SlackSendResult =
   | { ok: true; ts: string }
   | { ok: false; error: string; refused: boolean };
@@ -81,7 +73,6 @@ async function postSlack(
     channel,
     threadTs,
     windowEnd,
-    once = false,
   }: {
     text: string;
     subject: SlackSubject;
@@ -94,7 +85,6 @@ async function postSlack(
     // written at. Composing, retrying and recording take seconds, and every
     // event inside them would otherwise fall between two digests.
     windowEnd?: number;
-    once?: boolean;
   },
 ): Promise<SlackSendResult> {
   const token = process.env.SLACK_BOT_TOKEN;
@@ -107,7 +97,7 @@ async function postSlack(
   }
   let result = await postOnce(token, target, { text, threadTs });
   let attempts = 1;
-  if (!once && (!result.ok || typeof result.ts !== "string")) {
+  if (!result.ok || typeof result.ts !== "string") {
     console.error(
       `TTS slack (${subject.kind}): Slack rejected the post: ${result.error ?? "no ts in Slack's answer"} — retrying once`,
     );
@@ -149,7 +139,6 @@ export const sendSlack = internalAction({
     subject: SLACK_SUBJECT,
     channel: v.optional(v.string()),
     threadTs: v.optional(v.string()),
-    once: v.optional(v.boolean()),
   },
   handler: async (ctx, args): Promise<SlackSendResult> =>
     await postSlack(ctx, args),
@@ -168,97 +157,3 @@ export { replyRouteLive };
 // merges in the objection list, failures and recoveries in broken, box
 // changes in box. The door above stays for the replies Convex itself posts
 // (the capture reply in #dump, a thread notice) and the silence alarm.
-
-// ── Code-todo mirror refresh (spec §5.3) ─────────────────────────────────────
-// Reads each repo's vqc/todos.yaml from its DEFAULT branch (worktrees carry
-// divergent copies) via the GitHub contents API. Link-by-id-never-copy: the
-// mirror stores only what the Inventory needs to display + deep-link. Silently
-// a no-op until GITHUB_MIRROR_TOKEN is configured.
-// Which repos, and which branch each file is read from, comes from the one
-// home in ttsShared — the prospecting prompt reads the same list to know which
-// checkouts hold a registry a prospector must not re-capture from.
-const MIRROR_SOURCES = Object.entries(CODE_TODO_REPOS).map(([repo, { branch }]) => ({
-  repo,
-  branch,
-}));
-
-type VqcEntry = {
-  id?: unknown;
-  tier?: unknown;
-  readiness?: unknown;
-  status?: unknown;
-  statement?: unknown;
-  closed?: unknown;
-};
-
-export const refreshMirror = internalAction({
-  args: {},
-  handler: async (ctx): Promise<{ failures: string[] }> => {
-    const token = process.env.GITHUB_MIRROR_TOKEN;
-    if (!token) return { failures: [] };
-    // A repository that failed is a failure of the run (convex/jarvis/tick.ts
-    // failuresOf); the others are still mirrored.
-    const failures: string[] = [];
-    const fail = (message: string) => {
-      console.error(message);
-      failures.push(message);
-    };
-    for (const { repo, branch } of MIRROR_SOURCES) {
-      try {
-        const res = await fetch(
-          `https://api.github.com/repos/Heffnt/${repo}/contents/${CODE_TODO_PATH}?ref=${branch}`,
-          {
-            headers: {
-              Authorization: `Bearer ${token}`,
-              Accept: "application/vnd.github.raw+json",
-              "User-Agent": "tts-mirror",
-            },
-          },
-        );
-        if (res.status === 404) continue; // repo has no vqc file (yet)
-        if (!res.ok) {
-          fail(`TTS mirror: ${repo} fetch failed (${res.status})`);
-          continue;
-        }
-        const parsed = loadYaml(await res.text());
-        if (!Array.isArray(parsed)) {
-          fail(`TTS mirror: ${repo} vqc/todos.yaml is not a list`);
-          continue;
-        }
-        const url = `https://github.com/Heffnt/${repo}/blob/${branch}/${CODE_TODO_PATH}`;
-        const rows = (parsed as VqcEntry[])
-          .filter((e) => typeof e?.id === "string")
-          .map((e) => ({
-            externalId: e.id as string,
-            // Verbatim repo vocabulary, tier first: CMT entries carry `tier`
-            // (single letters, until its rename todo lands); tom.quest carries
-            // `readiness`.
-            tier: String(e.tier ?? e.readiness ?? "?"),
-            status:
-              e.closed !== undefined ||
-              e.status === "done" ||
-              e.status === "archived" ||
-              e.status === "closed"
-                ? "closed"
-                : "open",
-            statement: String(e.statement ?? "").trim(),
-            url,
-          }));
-        // Shape-change guard (review finding): a non-empty upstream list that
-        // parses to zero rows means the format changed, not that every todo
-        // vanished — replacing would silently wipe the mirror. Keep the stale
-        // mirror and complain instead.
-        if (parsed.length > 0 && rows.length === 0) {
-          fail(
-            `TTS mirror: ${repo} vqc/todos.yaml parsed to 0 entries from ${parsed.length} list items — format change? Mirror left untouched.`,
-          );
-          continue;
-        }
-        await ctx.runMutation(internal.tts.internalReplaceMirror, { repo, rows });
-      } catch (err) {
-        fail(`TTS mirror: ${repo} refresh error: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    }
-    return { failures };
-  },
-});

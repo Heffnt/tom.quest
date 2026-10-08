@@ -85,23 +85,6 @@ describe("POST /jarvis/event", () => {
     expect(await rows(t, "events")).toEqual([]);
   });
 
-  it("refuses Tom-only events through both worker-key routes", async () => {
-    const t = convexTest({ schema, modules });
-    vi.stubEnv("JARVIS_KEY", "k");
-    vi.stubEnv("TTS_WORKER_KEY", "k");
-    const body = {
-      kind: "disagreement-settled",
-      subject: "decision:ask-1",
-      data: { subject: "decision:ask-1", verdict: "approve" },
-    };
-    for (const path of ["/jarvis/event", "/tts/event"]) {
-      const res = await post(t, path, body, { "X-Jarvis-Key": "k" });
-      expect(res.status).toBe(403);
-      expect(await res.json()).toEqual({ error: "disagreement-settled is Tom-only" });
-    }
-    expect(await rows(t, "events")).toEqual([]);
-    expect(await rows(t, "dtsEvents")).toEqual([]);
-  });
 
   it("refuses a needs-tom-answered event through both worker-key routes", async () => {
     const t = convexTest({ schema, modules });

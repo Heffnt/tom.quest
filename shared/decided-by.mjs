@@ -8,7 +8,7 @@
 // own words. With no answer, the delegate decides. Three sides read the same
 // answer: the box maps his reply to the decision, the record checks that the
 // decision is what his reply named (convex/ttsAsk.ts), and the digest and
-// /intent say who decided and after how long. This module is the one home of
+// digest say who decided and after how long. This module is the one home of
 // that mapping and that wording, so the record cannot refuse a mapping the
 // box made, and the two pages cannot word it differently.
 
@@ -61,7 +61,7 @@ export function decisionOfAnswer(answer, options) {
 }
 
 /**
- * The clause the digest and /intent print for who decided: "decided by Tom
+ * The clause the digest prints for who decided: "decided by Tom
  * after 12 minutes", "decided by the delegate after waiting 120 minutes", or
  * "decided by Tom" when no wait was recorded. A delegate decision with no
  * recorded wait (an ask that was not a trade-off, or one recorded before the

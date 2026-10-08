@@ -84,7 +84,7 @@ const ASK_ARGS = {
   // field. A caller that passes no token stores none: an unregistered
   // delegate call carries no run, and the absence is never inferred into one.
   runToken: v.optional(v.string()),
-  // What the decision row (events kind "decision", convex/jarvis/intent.ts)
+  // What the decision row (events kind "decision")
   // carries beyond the ask: the lines it rested on, what would change it, and
   // the searches that missed. Only this mutation writes that row
   // (shared/jarvis-events.mjs DELEGATE_ONLY_KINDS).
@@ -105,26 +105,6 @@ const ASK_ARGS = {
   decidedBy: v.optional(v.union(v.literal("delegate"), v.literal("tom"))),
   needsTomId: v.optional(v.string()),
 };
-
-type AskData = {
-  askId: string;
-  sessionId?: string;
-  job?: string;
-  todoId?: string;
-  question: string;
-  options: string[];
-  recommendation: string;
-  fallback: string;
-  decision: string | null;
-  reason: string;
-  refused: boolean;
-  refusedBecause: string | null;
-  model: string;
-  ms: number;
-  promptSha: string;
-  runToken?: string;
-};
-
 
 /** How many asks this caller made in the last day, read on the caller's own
  *  index (dtsEvents.by_kind_session_at or by_kind_job_at), so other callers'
@@ -273,13 +253,12 @@ async function tomAnswer(
   return { eventId: row._id, answer };
 }
 
-/** The decision row (events kind "decision", convex/jarvis/intent.ts) for one
+/** The decision row (events kind "decision") for one
  *  answered ask, built from the ask as recorded; only internalRecordAsk calls it.
  *
  *  A DECISION THE DELEGATE TOOK IS ALSO ONE WEB PUSH to every live
  *  subscription (convex/pushSend.ts sendToAll): the question on one line, the
- *  decision on the next, and a tap opens that decision's row on /intent
- *  (app/intent/intent-client.tsx reads the #decision-<askId> fragment). Tom's
+ *  decision on the next, and a tap opens the TTS record. Tom's
  *  answer of 2026-10-04 to the question about decisions taken while he is
  *  reachable but not in the session: "agreed. lets send notifications to my
  *  phone for this." A refusal took nothing in his name and is not pushed: the
@@ -322,9 +301,7 @@ async function insertDecision(ctx: MutationCtx, ask: StoredAsk): Promise<void> {
   await ctx.scheduler.runAfter(0, internal.pushSend.sendToAll, {
     title: "Delegate decision",
     body: `${pushLine(ask.question)}\n${pushLine(ask.decision)}`,
-    // The askId is 8 lowercase hex characters (POST /tts/ask refuses any
-    // other), so it goes into the fragment as it is.
-    url: `/intent#decision-${ask.askId}`,
+    url: "/tts",
   });
 }
 
@@ -565,7 +542,7 @@ export const internalRecordDelegateObjection = internalMutation({
     // THE RECORD'S ROWS TOO. Every askId the digest numbers must resolve here,
     // or "revert <n>" throws on a line he was offered: a `jarvis decide`
     // decision is an events row of kind "decision" whose subject is its askId
-    // (convex/jarvis/intent.ts), and a line a producer put on the digest
+    // and a line a producer put on the digest
     // (ruling:, learning:, repo-proposal:, box-change:)
     // is an events row of kind "digest-line" whose subject is its askId
     // (convex/jarvis/outbox.ts listForDigest).

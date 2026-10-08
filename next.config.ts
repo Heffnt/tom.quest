@@ -54,9 +54,6 @@ const nextConfig: NextConfig = {
         },
         { source, destination: "/sessions", permanent: false },
       ]),
-      // "vocabulary" -> "intent" (2026-09-26): the vocabulary is one view of
-      // the intent page; the fragment names that view.
-      { source: "/vocabulary", destination: "/intent#vocabulary", permanent: true },
     ];
   },
 };

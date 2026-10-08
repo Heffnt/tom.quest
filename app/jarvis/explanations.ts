@@ -206,7 +206,7 @@ ${WHAT_TTS_IS}
 export const VERDICTS_EXPLANATION = page(
   "The verdicts — approve, revise, session, archive",
   "The four verdicts, and what each one actually sets in motion",
-  "The chips beside this caption record a ruling. What follows differs completely between them, and between a life todo and a code todo.",
+  "The chips beside this caption record a ruling on a life todo. What follows differs completely between verdicts.",
   `
 <h2>What this is</h2>
 
@@ -254,15 +254,9 @@ ${WHAT_TTS_IS}
 
 <p>Three of the four also stamp the todo as touched by Tom. <span class="mono">revise</span> is the exception, and deliberately: a revise hands the item back to an agent rather than settling it.</p>
 
-<h2>What approve means on a code todo</h2>
-
-<p>A <span class="term">code todo</span> is a row of the read-only mirror of a repository's own todo list, the file <span class="mono">vqc/todos.yaml</span>, addressed by repository name plus an identifier rather than by a row of the table <span class="mono">todos</span>. The same four chips appear on it.</p>
-
-<p>An approve or an archive on a code todo is recorded and stays pending: the ruling row is stored, unapplied, and nothing on the Jarvis Box or in the record acts on it. A revise on a code todo is recorded and stays pending in the same way. Session is recorded and stays pending in the same way: the code block session that applied it was opened from the calendar, which is removed.</p>
-
 <h2>What happens next, and who does it</h2>
 
-<p>Recording a ruling writes one row, writes one <span class="mono">ruling</span> entry in the append-only event record, and — for approve and archive on a life todo — nothing further. For revise, the planner re-prepares the brief on its next half-hourly run and the item returns at <span class="mono">prepared</span> for another look. For session, the item waits until Tom opens the conversation. For approve, archive or revise on a code todo, the ruling stays pending.</p>
+<p>Recording a ruling writes one row and one <span class="mono">ruling</span> entry in the append-only event record. For approve and archive, nothing further runs. For revise, the planner re-prepares the brief on its next half-hourly run and the item returns at <span class="mono">prepared</span> for another look. For session, the item waits until Tom opens the conversation.</p>
 `,
 );
 

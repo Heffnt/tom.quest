@@ -38,14 +38,6 @@ const outcomes = (t: ReturnType<typeof convexTest>) =>
 // catches a source's failure resolves, so a source that had stopped answering
 // read as a clean run and never reached the digest.
 describe("a tick task's outcome", () => {
-  it("is job-failed when the code mirror returns a repository's failure", async () => {
-    const t = convexTest({ schema, modules });
-    vi.stubEnv("GITHUB_MIRROR_TOKEN", "t");
-    vi.stubGlobal("fetch", vi.fn(async () => new Response("no", { status: 500 })));
-    expect(await t.action(internal.jarvis.tick.runTask, { name: "code-mirror", leaseId: await lease(t, "code-mirror") })).toEqual({ ok: false });
-    expect((await outcomes(t)).map((row) => row.kind)).toEqual(["job-failed"]);
-  });
-
   it("is job-failed when the pull-request mirror could not read a repository", async () => {
     const t = convexTest({ schema, modules });
     vi.stubEnv("GITHUB_MIRROR_TOKEN", "t");

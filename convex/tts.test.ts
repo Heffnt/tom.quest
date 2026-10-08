@@ -369,49 +369,6 @@ describe("TTS todos", () => {
     expect(todo.wakeAt).toBe(due);
   });
 
-  it("mirror replace upserts and drops vanished rows", async () => {
-    const t = convexTest({ schema, modules });
-    await t.mutation(internal.tts.internalReplaceMirror, {
-      repo: "ComplexMultiTrigger",
-      rows: [
-        { externalId: "a", tier: "R", status: "open", statement: "s1", url: "u" },
-        { externalId: "b", tier: "H", status: "open", statement: "s2", url: "u" },
-      ],
-    });
-    await t.mutation(internal.tts.internalReplaceMirror, {
-      repo: "ComplexMultiTrigger",
-      rows: [
-        { externalId: "a", tier: "R", status: "closed", statement: "s1", url: "u" },
-      ],
-    });
-    const rows = await t.run(async (ctx) =>
-      ctx.db.query("dtsCodeTodoMirror").collect(),
-    );
-    expect(rows).toHaveLength(1);
-    expect(rows[0].externalId).toBe("a");
-    expect(rows[0].status).toBe("closed");
-  });
-
-  // Ruling 70 took ComplexMultiTrigger off the code-todo list: its rows stay
-  // in the table as records, and no live reader shows them. witness: return
-  // the whole table from liveMirrorRows and CMT's frozen "open" row reaches
-  // the page and the planner as open work nothing will ever close.
-  it("the live mirror reads only the repos on the code-todo list", async () => {
-    const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
-    for (const repo of ["ComplexMultiTrigger", "tom.quest"]) {
-      await t.mutation(internal.tts.internalReplaceMirror, {
-        repo,
-        rows: [{ externalId: "a", tier: "R", status: "open", statement: "s", url: "u" }],
-      });
-    }
-    expect((await tom.query(api.tts.listMirror, {})).map((r) => r.repo)).toEqual(["tom.quest"]);
-    expect((await t.query(internal.tts.internalListMirror, {})).map((r) => r.repo)).toEqual([
-      "tom.quest",
-    ]);
-    const stored = await t.run(async (ctx) => ctx.db.query("dtsCodeTodoMirror").collect());
-    expect(stored.map((r) => r.repo).sort()).toEqual(["ComplexMultiTrigger", "tom.quest"]);
-  });
 });
 
 describe("TTS category", () => {

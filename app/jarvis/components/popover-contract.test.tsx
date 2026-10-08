@@ -75,12 +75,10 @@ vi.mock("@/app/lib/auth", () => ({
   useAuth: () => ({ isTom: true, canReadSurface: () => true }),
 }));
 
-import CodeTodoRow from "./code-todo-row";
 import EverythingTab from "./everything-tab";
 import GroundUpView from "./ground-up-view";
 import OptionsRow from "./options-row";
 import RulingDialog from "./ruling-dialog";
-import SignoffBlock from "./signoff-block";
 import TodoRow from "./todo-row";
 import VerdictButtons from "./verdict-buttons";
 import Composer from "@/app/agents/components/composer";
@@ -205,29 +203,6 @@ const TODO = {
   updatedAt: NOW,
 };
 
-const MIRROR = {
-  _id: "m1",
-  _creationTime: 0,
-  repo: "tom.quest",
-  externalId: "todo-14",
-  statement: "Fence the session repo list",
-  tier: "now",
-  status: "open",
-  url: "https://example.invalid/todo-14",
-  syncedAt: NOW,
-};
-
-const BRIEF = {
-  _id: "b1",
-  _creationTime: 0,
-  repo: "tom.quest",
-  externalId: "todo-14",
-  brief: "what it is",
-  recommendation: "approve",
-  execClass: "box",
-  preparedAt: NOW,
-};
-
 // ── The sessions screens ────────────────────────────────────────────────────
 // One live session, mid-run and with a stale daemon, because that posture puts
 // every control on screen at once: send, interrupt, stop, and force close.
@@ -295,18 +270,6 @@ const RUN = {
   ingestedAt: NOW,
 };
 
-const PROPOSAL = {
-  id: "p1",
-  at: NOW - 60_000,
-  text: "Hi Sarah — Thursday at 3 works.",
-  recipient: "Sarah Chen",
-  channel: "slack:C0SARAH01",
-  agentId: "claude:box:abcdef0123456789",
-  why: "she asked for a time",
-  status: "proposed",
-  error: null,
-};
-
 function load() {
   convex.data = {
     [getFunctionName(api.claudeSessions.getSession)]: SESSION,
@@ -316,10 +279,7 @@ function load() {
     [getFunctionName(api.claudeSessions.getPendingInbound)]: [],
     [getFunctionName(api.agents.get)]: RUN,
     [getFunctionName(api.tts.listTodos)]: [TODO],
-    [getFunctionName(api.tts.listMirror)]: [MIRROR],
-    [getFunctionName(api.ttsCode.listCodeBriefs)]: [BRIEF],
     [getFunctionName(api.ttsRulings.listRulings)]: [],
-    [getFunctionName(api.ttsSignoff.listProposals)]: [PROPOSAL],
   };
 }
 
@@ -327,20 +287,6 @@ const noop = () => {};
 
 /** One entry per component under either directory that renders controls. */
 const CASES: { file: string; render: () => void }[] = [
-  {
-    file: "app/jarvis/components/code-todo-row.tsx",
-    render: () =>
-      void render(
-        <CodeTodoRow
-          row={MIRROR as never}
-          brief={BRIEF as never}
-          ruling={undefined}
-          now={NOW}
-          expanded
-          onToggle={noop}
-        />,
-      ),
-  },
   {
     file: "app/jarvis/components/everything-tab.tsx",
     render: () => void render(<EverythingTab link={null} onLinkCleared={noop} />),
@@ -356,7 +302,6 @@ const CASES: { file: string; render: () => void }[] = [
     file: "app/jarvis/components/options-row.tsx",
     render: () => void render(<OptionsRow todo={TODO as never} rulable />),
   },
-  { file: "app/jarvis/components/signoff-block.tsx", render: () => void render(<SignoffBlock now={NOW} />) },
   {
     file: "app/jarvis/components/ruling-dialog.tsx",
     render: () =>

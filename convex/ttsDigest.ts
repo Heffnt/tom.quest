@@ -19,7 +19,6 @@ import { recordMissedKeepingDate } from "./tts";
 import { DELEGATE_DECISION, objectionRank, stripNarrowListId } from "./ttsAsk";
 import { LANDING_JOB, MERGE } from "./ttsMerge";
 import { REMOVAL_LOOP_PR, SIMPLIFY_PROPOSAL } from "./ttsSimplify";
-import { SEND_AS_TOM_FAILED, SENT_AS_TOM } from "./ttsSignoff";
 import { EVAL_RUN, PRELUDE_DELIVERY } from "./ttsEvals";
 import { AGENTS_WINDOW_URL, DEPLOY, boxChangeLines, boxChangesInWindow } from "./boxChanges";
 import { failuresInWindow } from "./jarvis/jobs";
@@ -44,7 +43,6 @@ import { displayTime } from "../shared/clock.mjs";
 import { redactSecrets } from "../shared/redact.mjs";
 import { decidedByText } from "../shared/decided-by.mjs";
 import { DIGEST_LINE, THREAD_DIGEST, digestFacts, lastDigest } from "./jarvis/outbox";
-import { DISAGREEMENT_SETTLED } from "./jarvis/intent";
 import { readTodo } from "./jarvis/tables";
 import { MAX_DOCUMENT_BYTES, MIB, ReadBudget, getWithin, readWithin, type ReadCut } from "./readBudget";
 
@@ -134,8 +132,6 @@ export const LEARNING_CHECK_FAILED = "learning-check-failed";
 // lines it reported that are not one proposal. Nothing prints them today —
 // they are read off the row when a night is being explained.
 export const REPO_PROPOSAL = "repo-proposal";
-const REPO_PROPOSAL_APPLIED = "repo-proposal-applied";
-const REPO_PROPOSAL_DROPPED = "repo-proposal-dropped";
 
 // The note the rollover writes on the outcome row, so the row says who wrote
 // it when Tom reads the item's history.
@@ -287,7 +283,6 @@ export const READ_BYTES = {
   decisions: 0.125 * MIB,
   digestLines: 0.125 * MIB,
   superseded: 0.125 * MIB,
-  settlements: 0.125 * MIB,
   jobReports: 0.25 * MIB,
   prepared: 1.5 * MIB,
   needs: 0.5 * MIB,
@@ -295,7 +290,7 @@ export const READ_BYTES = {
   surfacedMarks: 0.125 * MIB,
   deploys: 0.125 * MIB,
   boxChanges: 0.5 * MIB,
-  runs: 1.875 * MIB,
+  runs: 2 * MIB,
 } as const;
 
 /** The most one digest's transaction reads (GATHER_BYTES above); the tests
@@ -512,11 +507,11 @@ export async function gatherTodayFacts(
   //    THE OBJECTION LIST'S KINDS ARE READ ON THEIR OWN INDEX (by_kind_at),
   //    not out of the newest EVENT_SCAN rows of every kind: a busy night of
   //    instrumentation must not push a decision taken in his name (a /tts/ask
-  //    row), a merge or a message sent as him out of the window before the
+  //    row) or a merge out of the window before the
   //    kind is looked at. The scan keeps the rest.
-  //    The five kinds share one allotment and are read one after another
+  //    The four kinds share one allotment and are read one after another
   //    (convex/readBudget.ts says why not in parallel).
-  const objectionKinds = new Set<string>([DELEGATE_DECISION, MERGE, SENT_AS_TOM, SIMPLIFY_PROPOSAL, REMOVAL_LOOP_PR]);
+  const objectionKinds = new Set<string>([DELEGATE_DECISION, MERGE, SIMPLIFY_PROPOSAL, REMOVAL_LOOP_PR]);
   const objectionBudget = budget.allot("objection-list events", READ_BYTES.objectionEvents);
   const byKind: Doc<"dtsEvents">[][] = [];
   for (const kind of objectionKinds) {
@@ -642,22 +637,19 @@ export async function gatherTodayFacts(
     // A merge, not a delegate decision. The lead counts the two separately
     // (ttsCompose.objectionsLead): nobody decided a merge in Tom's name.
     merged?: boolean;
-    // A message sent in his name on his own sign-off: his decision, counted
-    // apart from both.
-    sentAsTom?: boolean;
     // A question Tom decided himself on /thread (convex/ttsAsk.ts decidedBy
     // "tom"), and the clause naming who decided after how long.
     decidedByTom?: boolean;
     decidedByText?: string;
   }[] = [];
 
-  // The delegate's decisions recorded by `jarvis decide` (convex/jarvis/
-  //    intent.ts, kind "decision"): the same objection list as the
+  // The delegate's decisions recorded by `jarvis decide` (kind "decision"):
+  //    the same objection list as the
   //    delegate-decision rows below, numbered with them.
   //    Newest first before the cap, so a busy window drops its oldest rows.
   //    The askId is the row's subject, which is what the objection resolver
-  //    (convex/ttsAsk.ts internalRecordDelegateObjection) and jarvis/intent
-  //    settle find it by. The model's words go through safeStr like every other.
+  //    (convex/ttsAsk.ts internalRecordDelegateObjection) finds it by. The
+  //    model's words go through safeStr like every other.
   //
   //    ONE ROW PER DECISION. internalRecordAsk (convex/ttsAsk.ts) writes the
   //    ask's delegate-decision row and, for an ask the delegate answered, a
@@ -778,32 +770,6 @@ export async function gatherTodayFacts(
         });
         break;
       }
-      case SENT_AS_TOM: {
-        // A MESSAGE WENT OUT IN HIS NAME (convex/ttsSignoff.ts). He signed it
-        // on /tts, so it is not his to object to; it is listed with the
-        // decisions because it is one taken in his name, and the record of a
-        // send reaching another person is what the guarantee "only Tom speaks
-        // for Tom" asks him to be able to read. The askId is empty, as a
-        // merge's is: a reply naming its number reaches no delegate decision.
-        const recipient = str(d.recipient) ?? "someone";
-        const channel = str(d.channel) ?? "";
-        const where =
-          channel === "calendar"
-            ? "a calendar invitation"
-            : channel.startsWith("slack:")
-              ? `Slack ${channel.slice("slack:".length)}`
-              : channel;
-        const signedAt = typeof d.signedAt === "number" ? d.signedAt : undefined;
-        rawObjections.push({
-          at: e.at,
-          askId: "",
-          decision: `sent as you to ${recipient} on ${where}${signedAt === undefined ? "" : `, signed at ${displayTime(signedAt)}`}`,
-          refused: false,
-          merged: false,
-          sentAsTom: true,
-        });
-        break;
-      }
       case SIMPLIFY_PROPOSAL: {
         // THE WEEKLY PASS POSTS NOTHING TO #tts-today. This composer is a
         // different program reading rows, and it already lists merges the same
@@ -886,14 +852,6 @@ export async function gatherTodayFacts(
         // through POST /tts/job-failed). A Slack failure is the door's own and
         // is not a line.
         if (!isFailureKind(e.kind) || NOT_A_FAILURE_LINE.has(e.kind)) break;
-        // THE WALL'S OWN PROBE IS NOT A FAILED SEND. The nightly wall eval
-        // asks the sign-off door to send a calendar event to an address under
-        // .invalid (RFC 2606: can never be delivered) and expects the refusal;
-        // that refusal is the wall holding, so it is no broken line. It stays
-        // while that probe runs (Jarvis worker/jobs/evals.mjs wall set, PR
-        // #40): without it every night's passing wall test would be a
-        // failed send in his digest.
-        if (e.kind === SEND_AS_TOM_FAILED && typeof d.recipient === "string" && d.recipient.toLowerCase().endsWith(".invalid")) break;
         const job = str(d.job) ?? e.kind.replace(/-fail(?:ed|ure)$/, "");
         // The raw `error` is a job's own stderr — worker/jobs/nightly.mjs
         // reports git's verbatim, and git names its remote with the token in
@@ -950,7 +908,7 @@ export async function gatherTodayFacts(
   // The evals (Jarvis worker/jobs/evals.mjs): one eval-run event per set per
   //    run (convex/ttsEvals.ts EVAL_RUN, subject the set). A set whose newest
   //    run in the window failed items is one broken line; a clean run is the
-  //    weekly's fact and /intent's pass rate, not a morning line.
+  //    weekly's fact, not a morning line.
   const evalRuns = await readWithin(
     budget.allot("eval runs", READ_BYTES.evalRuns),
     ctx.db
@@ -1010,24 +968,6 @@ export async function gatherTodayFacts(
       refusedBecause: safeStr(d.refusedBecause),
     });
   }
-
-  // His settlements on /intent (convex/jarvis/intent.ts settle, kind
-  //    "disagreement-settled"): one line each, the text settle wrote, read on
-  //    the kind's own index over the same window, oldest first.
-  const settledRows = await readWithin(
-    budget.allot("settlements", READ_BYTES.settlements),
-    ctx.db
-      .query("events")
-      .withIndex("by_kind_at", (q) => q.eq("kind", DISAGREEMENT_SETTLED).gte("at", since).lt("at", now))
-      .order("desc"),
-    OBJECTION_SCAN,
-  );
-  const settled = settledRows
-    .reverse()
-    .flatMap((row) => {
-      const text = safeStr(row.text);
-      return text === undefined ? [] : [{ id: row._id as string, text }];
-    });
 
   // His standing rulings that new information ended and no digest has
   //    printed yet (convex/jarvis/rulings.ts supersede writes supersededAt and
@@ -1123,7 +1063,6 @@ export async function gatherTodayFacts(
         o.refusedBecause === undefined ? undefined : stripNarrowListId(o.refusedBecause),
       fallback: o.fallback,
       merged: o.merged === true,
-      ...(o.sentAsTom === true ? { sentAsTom: true } : {}),
       ...(o.decidedByTom === true ? { decidedByTom: true } : {}),
       ...(o.decidedByText === undefined ? {} : { decidedByText: o.decidedByText }),
     }));
@@ -1183,7 +1122,6 @@ export async function gatherTodayFacts(
     // Counted over the WHOLE list, printed and beyond, because the lead's
     // count is the whole list's.
     objectionMerges: objections.filter((o) => o.merged).length,
-    objectionSent: objections.filter((o) => o.sentAsTom === true).length,
     objectionTom: objections.filter((o) => o.decidedByTom === true).length,
     // A flagged capture that preparation has since dated keeps its lateness
     // here, and is said once, in the needs-you run (composeToday). Dated ones
@@ -1199,7 +1137,6 @@ export async function gatherTodayFacts(
       .map(({ n }) => n),
     overnightByTodo,
     broken: [...failures.values()],
-    settled,
     superseded,
     supersededFrom,
     supersededComplete,

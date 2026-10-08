@@ -60,9 +60,13 @@ import { internal } from "../_generated/api";
 import { isRulingVerdict } from "../ttsRulings";
 import { nyCalendarDayKey } from "../ttsShared";
 import { MIB, ReadBudget, readWithin } from "../readBudget";
-import { sha256Hex } from "../ttsSignoff";
 import { jarvisAuth, jsonResponse } from "./auth";
 import { insertEvent } from "./record";
+
+async function sha256Hex(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
 
 export const postRuling = httpAction(async (ctx, request) => {
   const denied = jarvisAuth(request);

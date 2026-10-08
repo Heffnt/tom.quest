@@ -49,6 +49,8 @@ Non-negotiables that hold through every state: nothing is deleted from the todo 
 
 ## Fields on `dtsCodeBriefs`
 
+Since October 8, 2026 neither the table nor anything that read it exists: tom.quest 394 removed the code briefs and the code-todo mirror with their pen, `POST /tts/code-briefs`, `ttsShared.RECOMMENDATION` and `normalizeRecommendation`, and the migrations' reads of them (`internalMigrateRecommendations`, and the `dtsCodeBriefs` part of `internalClearRetiredFields`). The row below is the ledger as it stood.
+
 | Removed | Readers and writers today | Destination | Gate | Status |
 |---|---|---|---|---|
 | recommendation values `stale-replan`, `needs-session`, `propose-archive` | none: `ttsShared.RECOMMENDATION` (the schema, the brief pen and `POST /tts/code-briefs`) holds the four verdict words and refuses the three; the pen has nothing left to normalize on write. `normalizeRecommendation` still ACCEPTS them on read for one more release — a page bundle built before this narrow can hold a brief in the old spelling — and `internalMigrateRecommendations` reads them through a loose view of the row | the four verdict words: `revise`, `session`, `archive` (`approve` stays) | `internalMigrateRecommendations` run on prod, every `-to-` count zero on a second run; the planner's brief pass emits the four words; **and no brief left in a retired spelling** — `internalClearRetiredFields` re-applies the same one-to-one map (`recommendation-normalized` zero on a second run), so a brief written by a box job between the two runs cannot hold this deploy up | **cleared, then narrowed** (the validator; the read-side acceptance goes next release) |
@@ -117,6 +119,8 @@ went 40 to 37 over the same three.
 | fields on `batches` | 10 | **9** |
 | fields on `dtsCodeBriefs` | 9 | **8** |
 
+These counts are as measured then. On October 8, 2026 tom.quest 394 removed `dtsCodeBriefs` whole, with the code-todo mirror.
+
 Tables gone: `dtsDailyQueues`, `dtsCodeRulings`, `claudePermissions`.
 Fields gone: `importance` (from `dtsTodos` and `dtsCodeBriefs`), `latestSafeAt`,
 `wakeCondition`, `members`, `plan`, `batches.path`.
@@ -143,7 +147,7 @@ said is not lost either: every value it took out is on record as a
    A dry run writes no todo row (and no batch or brief row); it does write one `dtsEvents` row, kind `<name>-dry-run`, holding the counts, so the numbers Tom saw are on record. Terminal rows (done, archived) are walked and counted like the rest and their shape is mapped so the retired value leaves the validator; nothing that reads as live — a sleep, a status — is written on them.
 2. **Run** without `dryRun`. A scheduled chain reports its totals as one `dtsEvents` row (`<name>-migrated`); a single large page returns them directly. Rollback point: the export the preserve phase made, plus the per-row events every mapping writes (`status-changed`, `timing-mapped`, `batch-needs-derived`, `retired-field-cleared`).
 3. **Verify** with a second run: every mapping count is zero and the only non-zero counts are the ones a walk only counts.
-4. **Clear** the field itself, which the value mappings deliberately do not do — they map what a field MEANT and leave the field where it is. `internalClearRetiredFields` walks `dtsTodos` (`latestSafeAt`, `wakeCondition`, `importance`, `members`, `plan`), `batches` (`path`), `claudeSessions` (the retired status) and `dtsCodeBriefs` (`importance`, a retired recommendation spelling) in one chain, recording every value it takes out:
+4. **Clear** the field itself, which the value mappings deliberately do not do — they map what a field MEANT and leave the field where it is. `internalClearRetiredFields` walks `dtsTodos` (`latestSafeAt`, `wakeCondition`, `importance`, `members`, `plan`), `batches` (`path`), `claudeSessions` (the retired status) and `dtsCodeBriefs` (`importance`, a retired recommendation spelling; this part went with the table on October 8, 2026) in one chain, recording every value it takes out:
    `npx convex run ttsMigrations:internalClearRetiredFields '{"dryRun":true,"pageSize":5000}'`
    then the same without `dryRun`. The chain's whole totals are the `clear-retired-dry-run` / `clear-retired-migrated` event the last call writes; the call that started it returns when its own page is done. One table alone takes `'{"table":"claudeSessions","pageSize":5000}'`.
 5. **Verify the clearing** the same way: a second run reports zero for every `-cleared` count, `awaiting-permission-ended` and `recommendation-normalized`. Until that holds, the deploy that drops the declaration fails on the first row it finds.
