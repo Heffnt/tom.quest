@@ -598,13 +598,17 @@ const ttsCalendarEvent = httpAction(async (ctx, request) => {
   if (typeof b.title !== "string" || b.title.trim() === "") {
     return jsonResponse(400, { error: "title (non-empty string) required" });
   }
- if (typeof b.start !== "number" || typeof b.end !== "number") {
-   return jsonResponse(400, { error: "start and end (epoch ms) required" });
- }
+  if (typeof b.start !== "number" || typeof b.end !== "number") {
+    return jsonResponse(400, { error: "start and end (epoch ms) required" });
+  }
+  // An event with guests sends each an invitation from Tom's calendar, a
+  // message in his name, which only his sign-off allowed; with the sign-off
+  // removed the route refuses it rather than create the event without them,
+  // which would drop what the caller asked for without saying so.
   if (b.guests !== undefined) {
     return jsonResponse(400, { error: "guests are not supported by the calendar-event route" });
   }
- const recurrence = Array.isArray(b.recurrence)
+  const recurrence = Array.isArray(b.recurrence)
     ? b.recurrence.filter((r): r is string => typeof r === "string")
     : undefined;
   try {
