@@ -470,15 +470,13 @@ async function resolveSubject(
   }
   const repo = subjectId.slice(0, cut);
   const externalId = subjectId.slice(cut + 1);
-  // The code mirror and its briefs are removed, so a code todo is nothing the
-  // record holds or showed Tom: a code ruling names a change (a pull request
-  // or a commit, isChangeSubject) and nothing else.
-  if (!isChangeSubject(externalId)) {
-    throw new Error(
-      `refused: ${subjectId} is not a change (a pull request or a commit); code todos are no longer mirrored, so a ruling names a change or a todo`,
-    );
-  }
-  return { repo, externalId };
+  // Check 4 is that the subject exists. A code subject existed for this door
+  // only as a mirrored code todo with a brief Tom was shown; the mirror and
+  // the briefs are removed, so nothing can show one exists, and a ruling
+  // from his words names a todo.
+  throw new Error(
+    `refused: ${repo} ${externalId} is a code subject, which the record no longer holds (the code mirror is removed); a ruling from Tom's words names a todo`,
+  );
 }
 
 // What a session's turns are ABOUT (check 5): the subject its opening prompt
