@@ -92,6 +92,21 @@ describe("redactSecrets replaces every credential shape", () => {
     expect(out).not.toContain(accessId);
     expect(out).not.toContain(secret);
   });
+
+  // In a serialized body the line break or tab between them is an escape.
+  for (const [what, between] of [["a line break", "\n"], ["a CRLF and an indent", "\r\n  "], ["a tab", "\t"], ["a colon and a tab", ":\t"]]) {
+    it(`redacts an AWS secret access key behind its ID and ${what}, serialized once and twice`, () => {
+      const accessId = t("AK", "IA", "FEDCBA0987654321");
+      const secret = t("Qw1eR2tY3uI4oP5a", "Sd6fG7hJ8kL9zX0c", "Vb2nM3qW");
+      const once = JSON.stringify({ output: `${accessId}${between}${secret}` });
+      const out = redactSecrets(once);
+      expect(out).not.toContain(secret);
+      expect(JSON.parse(out).output).toBe(`[redacted:aws]${between}[redacted:aws]`);
+      const outTwice = redactSecrets(JSON.stringify({ body: once }));
+      expect(outTwice).not.toContain(secret);
+      expect(JSON.parse(JSON.parse(outTwice).body).output).toBe(`[redacted:aws]${between}[redacted:aws]`);
+    });
+  }
 });
 
 describe("redactSecrets keeps named secret keys while removing their values", () => {
@@ -140,6 +155,55 @@ describe("redactSecrets keeps named secret keys while removing their values", ()
 // secrecy one: the daemon redacts `JSON.stringify(body)` (lib.mjs), so a
 // replacement that eats a closing quote makes the ingest POST malformed, Convex
 // answers 400, and session.mjs — which treats 400 as permanent — drops the row.
+// A credential directly behind an escape in serialized text. JSON spells a
+// line break before a token `\n`, a tab `\t`, a control character `\u001b`;
+// each escape ends in a word character, so a plain `\b` read `nghp_…` as one
+// word and the token went through whole. Every shape, behind each escape, in
+// text serialized once and twice, is redacted and the JSON still parses.
+describe("a credential directly behind a serialized escape", () => {
+  const ESCAPES = [["a line break", "\n"], ["a carriage return", "\r"], ["a tab", "\t"], ["a form feed", "\f"], ["a backspace", "\b"], ["a control character", "\u001b"]];
+  for (const [kind, token] of SHAPES) {
+    for (const [what, before] of ESCAPES) {
+      it(`redacts a ${kind} token (${token.slice(0, 8)}…) behind ${what}, serialized once and twice`, () => {
+        const once = JSON.stringify({ output: `line one${before}${token}` });
+        const out = redactSecrets(once);
+        expect(out).not.toContain(token);
+        expect(JSON.parse(out).output).toBe(`line one${before}[redacted:${kind}]`);
+        const twice = JSON.stringify({ body: once });
+        const outTwice = redactSecrets(twice);
+        expect(outTwice).not.toContain(token);
+        expect(JSON.parse(JSON.parse(outTwice).body).output).toBe(`line one${before}[redacted:${kind}]`);
+      });
+    }
+  }
+
+  it("redacts a named assignment behind a serialized line break", () => {
+    const value = t("Zx9Yw8Vu7", "Ts6Rq5Po4Nm");
+    const out = redactSecrets(JSON.stringify({ output: `env:\nGITHUB_TOKEN=${value}` }));
+    expect(JSON.parse(out).output).toBe("env:\nGITHUB_TOKEN=[redacted:secret]");
+  });
+
+  it("still leaves a token-shaped string glued to the letters of a word, as before", () => {
+    const glued = `abc${SHAPES[0][1]}`;
+    expect(redactSecrets(glued)).toBe(glued);
+  });
+
+  // A \uXXXX escape counts as a start unless it spells an ASCII word
+  // character: decoded, a token behind a is glued to `a`.
+  it("redacts a token behind the escape of a character that is not an ASCII word character", () => {
+    for (const escape of ["\\u001b", "\\u0020", "\\u002d", "\\u00e9", "\\u2026", "\\u007f"]) {
+      expect(redactSecrets(`${escape}${SHAPES[0][1]}`), escape).toBe(`${escape}[redacted:github]`);
+    }
+  });
+
+  it("leaves a token behind the escape of an ASCII word character, which decodes to a glued token", () => {
+    for (const escape of ["\\u0030", "\\u0039", "\\u0041", "\\u005a", "\\u005A", "\\u005f", "\\u005F", "\\u0061", "\\u007a", "\\u007A"]) {
+      const glued = `${escape}${SHAPES[0][1]}`;
+      expect(redactSecrets(glued), escape).toBe(glued);
+    }
+  });
+});
+
 describe("a replacement inside a serialized body never breaks the JSON", () => {
   const value = t("r4Nd0m", "-Secret_Value.1234567890-abcdefghijklmnop");
   const CASES = [

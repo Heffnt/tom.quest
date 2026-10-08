@@ -32,25 +32,39 @@
 // lib.mjs — and a secret filter is exactly the kind of thing a test must fence
 // (__tests__/redact.test.mjs).
 
+// WHERE A CREDENTIAL CAN START: a word boundary, or the end of a backslash
+// escape. In serialized text a line break before a token is spelled `\n`, a
+// tab `\t`, a control character `\u001b`; each escape ends in a word
+// character, so a plain `\b` saw `nghp_…` as one word and the token behind
+// it went through whole. JSON's escapes that end in a letter or a digit are
+// \b, \f, \n, \r, \t and \uXXXX; \/, \" and \\ end in a non-word
+// character, which `\b` already reads as a boundary. A \uXXXX that spells
+// an ASCII word character (0-9, A-Z, _, a-z, as \u0061 is `a`) is not a
+// start: decoded, the token behind it is glued to a word, which `\b` leaves
+// alone in plain text too. Every rule whose credential starts with a word
+// character opens with this.
+const START = String.raw`(?:\b|(?<=\\[bfnrt])|(?<=\\u(?!00(?:3[0-9]|4[1-9A-Fa-f]|5[0-9AaFf]|6[1-9A-Fa-f]|7[0-9Aa]))[0-9A-Fa-f]{4}))`;
+const shape = (body, flags = "g") => new RegExp(`${START}${body}`, flags);
+
 // Ordered: the named shapes first, so `Authorization: Bearer gho_…` reports
 // the kind it actually is, and the catch-all bearer rule last picks up only a
 // header value no named shape claimed. A marker is lowercase letters and
 // brackets, so no later rule can match inside an earlier rule's marker.
 export const REDACTED_SHAPES = Object.freeze([
   // GitHub: gh{p,o,u,s,r}_… (classic + app tokens) and the fine-grained PAT.
-  { kind: "github", pattern: /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g },
+  { kind: "github", pattern: shape(String.raw`(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b`) },
   // Slack: every xox?- bot/user/app/refresh token, plus the app-level xapp-.
-  { kind: "slack", pattern: /\b(?:xox[abcdeprs]|xapp)-[A-Za-z0-9-]{10,}/g },
+  { kind: "slack", pattern: shape(String.raw`(?:xox[abcdeprs]|xapp)-[A-Za-z0-9-]{10,}`) },
   // Anthropic before OpenAI: sk-ant-… also matches the generic sk- shape.
-  { kind: "anthropic", pattern: /\bsk-ant-[A-Za-z0-9_-]{20,}/g },
-  { kind: "openai", pattern: /\bsk-[A-Za-z0-9_-]{20,}/g },
+  { kind: "anthropic", pattern: shape(String.raw`sk-ant-[A-Za-z0-9_-]{20,}`) },
+  { kind: "openai", pattern: shape(String.raw`sk-[A-Za-z0-9_-]{20,}`) },
   // AWS access key id.
-  { kind: "aws", pattern: /\bAKIA[0-9A-Z]{16}\b/g },
+  { kind: "aws", pattern: shape(String.raw`AKIA[0-9A-Z]{16}\b`) },
   // Google API key.
-  { kind: "google", pattern: /\bAIza[A-Za-z0-9_-]{35}\b/g },
+  { kind: "google", pattern: shape(String.raw`AIza[A-Za-z0-9_-]{35}\b`) },
   // Convex deploy key: prod:<deployment>|<base64ish>. The pipe is what makes
   // it a key and not a prose colon.
-  { kind: "convex", pattern: /\b(?:prod|dev|preview):[a-z0-9-]+\|[A-Za-z0-9+/=_-]{20,}/g },
+  { kind: "convex", pattern: shape(String.raw`(?:prod|dev|preview):[a-z0-9-]+\|[A-Za-z0-9+/=_-]{20,}`) },
 ]);
 
 // The header form, kept separate because the prefix is preserved: the fact
@@ -63,7 +77,12 @@ const BEARER = /(Authorization[ \t]*[:=][ \t]*Bearer[ \t]+)[A-Za-z0-9._~+/=-]{8,
 // does, so recognise the pair before the ID's normal shape is replaced below.
 // The separator (and optional matching quotes) survives to keep a CLI table or
 // assignment readable, while the 40-character secret cannot reach storage.
-const AWS_ACCESS_KEY_PAIR = /\b(AKIA[0-9A-Z]{16})([ \t]*(?:[,;:=][ \t]*|\r?\n[ \t]*|[ \t]+))(["']?)([A-Za-z0-9/+=]{40})\3(?![A-Za-z0-9/+=])/g;
+// The pair's separator reads a tab and a line break raw or serialized, once
+// or more (`\t`, `\n`, `\r\n`, `\\n`), so the secret on the line after its ID
+// in a serialized body is taken as it is in plain text.
+const PAIR_SPACE = String.raw`(?:[ \t]|\\+t)`;
+const PAIR_BREAK = String.raw`(?:\r?\n|(?:\\+r)?\\+n)`;
+const AWS_ACCESS_KEY_PAIR = shape(String.raw`(AKIA[0-9A-Z]{16})(${PAIR_SPACE}*(?:[,;:=]${PAIR_SPACE}*|${PAIR_BREAK}${PAIR_SPACE}*|${PAIR_SPACE}+))(["']?)([A-Za-z0-9/+=]{40})\3(?![A-Za-z0-9/+=])`);
 
 // A name alone is not a secret, but it makes the value on the other side of
 // an assignment one — if the value also LOOKS like a credential.  The list is
@@ -109,12 +128,12 @@ const NAMED_VALUE = `(?:${ESCAPED_DOUBLE}|${DOUBLE}|${SINGLE}|(${BARE}))`;
 const namedRules = NAME_FLAVORS.map(({ name, flags }) => ({
   json: new RegExp(String.raw`("(${name})"\s*:\s*)${DOUBLE}`, flags),
   escapedJson: new RegExp(String.raw`(\\"(${name})\\"\s*:\s*)${ESCAPED_DOUBLE}`, flags),
-  assignment: new RegExp(String.raw`(\b(${name})\b\s*(?:=|:)\s*)${NAMED_VALUE}`, flags),
+  assignment: new RegExp(String.raw`(${START}(${name})\b\s*(?:=|:)\s*)${NAMED_VALUE}`, flags),
   // Some tools print "auth_token <value>" rather than an assignment.  Restrict
   // this fallback to a plausibly high-entropy value: ordinary prose about a
   // token is not a credential merely because it follows that word.
   spaced: new RegExp(
-    String.raw`(\b(${name})\b(?:\s+(?:is|was)\s+|\s+))([A-Za-z0-9._~+/=-]{32,})`,
+    String.raw`(${START}(${name})\b(?:\s+(?:is|was)\s+|\s+))([A-Za-z0-9._~+/=-]{32,})`,
     flags,
   ),
 }));
