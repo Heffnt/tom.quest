@@ -2,16 +2,17 @@
 // its context through.
 //
 // Each caller's payload was its own route under /tts/ (planner-context,
-// capture-context, ask-context, learning-input, weekly-input, simplify-input;
-// prelude-delivery, golden-input and label-input went with the evals request
-// protocol, s6). They are one route now, one
+// ask-context, learning-input, simplify-input; prelude-delivery, golden-input
+// and label-input went with the evals request protocol, s6; capture-context
+// and weekly-input went with Gmail and Canvas capture and the weekly job in the
+// redesign of 2026-10-06). They are one route now, one
 // reader per caller in READERS below, each building the same bytes its old
 // route built: the old routes in convex/http.ts call these readers, so the
 // two spellings cannot drift while both stand. The /tts/ registrations go
 // when the box's last caller spells this route.
 //
 // The reader names are the box's word for what it is doing (planner,
-// capture, ask, learning, weekly, simplify, work-queue). The ones that carry the
+// ask, learning, simplify, work-queue). The ones that carry the
 // model-of-tom context all read the same text (ttsContext
 // internalContextPrelude takes no caller name).
 
@@ -81,21 +82,6 @@ const READERS: Record<string, Reader> = {
       return modelOfTomErrorResponse(error);
     }
   },
-  // The model-of-tom context a capture run works from, and the declined
-  // integrations, before a poller captures anything.
-  capture: async (ctx) => {
-    let writingStandard: string;
-    let declinedIntegrations;
-    try {
-      [writingStandard, declinedIntegrations] = await Promise.all([
-        ctx.runQuery(internal.ttsContext.internalContextPrelude, {}),
-        ctx.runQuery(internal.ttsIntegrations.internalDeclinedIntegrations, {}),
-      ]);
-    } catch (error) {
-      return modelOfTomErrorResponse(error);
-    }
-    return jsonResponse(200, { writingStandard, declinedIntegrations });
-  },
   // What the delegate's caller sees before it asks: asks spent in the last
   // day, its cap, every objection Tom already made about this todo, his
   // standing rulings in each `scope` the question names (repeatable; "all"
@@ -133,27 +119,8 @@ const READERS: Record<string, Reader> = {
     }
     return jsonResponse(200, await ctx.runQuery(internal.ttsNightly.internalLearningInput, { since, until }));
   },
-  // The Friday job's deterministic gather of the seven days ending at `until`.
-  weekly: async (ctx, params) => {
-    const until = untilOf(params);
-    if (!Number.isFinite(until) || until <= 0) {
-      return jsonResponse(400, { error: "until must be an epoch ms instant" });
-    }
-    let facts;
-    let writingStandard: string;
-    try {
-      [facts, writingStandard] = await Promise.all([
-        ctx.runQuery(internal.ttsWeekly.internalWeeklyInput, { until }),
-        ctx.runQuery(internal.ttsContext.internalContextPrelude, {}),
-      ]);
-    } catch (error) {
-      return modelOfTomErrorResponse(error);
-    }
-    return jsonResponse(200, { ...facts, writingStandard });
-  },
   // The simplification pass's gather of the four weeks ending at `until`. It
-  // asks as its own caller, "simplify-input", so its door cannot change
-  // silently on the day the weekly job's does.
+  // asks as its own caller, "simplify-input".
   simplify: async (ctx, params) => {
     const until = untilOf(params);
     if (!Number.isFinite(until) || until <= 0) {

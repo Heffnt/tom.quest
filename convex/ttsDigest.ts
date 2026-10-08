@@ -82,7 +82,6 @@ import { MAX_DOCUMENT_BYTES, MIB, ReadBudget, getWithin, readWithin, type ReadCu
 // the "Captured from email" section (a capture that is ready is a thing to do
 // today; one that is not is a row, not a line).
 
-export const SLACK_FAILED = "slack-send-failed";
 export const DIGEST_SENT = "digest-sent";
 
 // The delegate's rows (delegate-design.md §1.2), read by KIND if they are
@@ -105,8 +104,6 @@ export { MERGE } from "./ttsMerge";
 //                                         resultBlob, modelOfTomCommit }
 //   kind "learning-revert-failed", data { id?, file?, reason, objection }
 export const LEARNING_CHANGE = "learning-change";
-export const LEARNING_REVERTED = "learning-reverted";
-export const LEARNING_REVERT_FAILED = "learning-revert-failed";
 export { PRELUDE_DELIVERY } from "./ttsEvals";
 
 // The night the learning step took its WHOLE write back: WikiTom's
@@ -139,11 +136,6 @@ export const LEARNING_CHECK_FAILED = "learning-check-failed";
 export const REPO_PROPOSAL = "repo-proposal";
 const REPO_PROPOSAL_APPLIED = "repo-proposal-applied";
 const REPO_PROPOSAL_DROPPED = "repo-proposal-dropped";
-
-// The weekly session's record that Tom confirmed an area page (phase 8;
-// POST /tts/area-reviewed, convex/ttsWeekly.ts): key = the page's path,
-// data { path, reviewedOn }. Listed with what happened since the last digest.
-export const AREA_REVIEWED = "area-reviewed";
 
 // The note the rollover writes on the outcome row, so the row says who wrote
 // it when Tom reads the item's history.

@@ -635,10 +635,6 @@ export function goalCheckable(todo: GoalTodo): boolean {
   return (todo.condition ?? "").trim() !== "";
 }
 
-// Weekly source-file facts identify area pages by this prefix. Prompt text is
-// stored as already-rendered layers in modelOfTomPublication instead.
-export const MODEL_OF_TOM_AREAS_DIR = "model-of-tom/areas";
-
 /** The first line of every prompt that carries the prelude, and so of every
  * transcript. It is shared with the session reader, which reads the header
  * from the stored publication rather than rebuilding it from source files. */
@@ -758,9 +754,6 @@ export const SESSION_MODEL = v.union(
  * the field existed. */
 export const SESSION_LOGINS = ["wpi", "gmail"] as const;
 export const SESSION_LOGIN = v.union(...SESSION_LOGINS.map((l) => v.literal(l)));
-export function isSessionModel(name: unknown): name is SessionModel {
-  return typeof name === "string" && Object.prototype.hasOwnProperty.call(SESSION_MODELS, name);
-}
 export function modelFamily(model: SessionModel | undefined): ModelFamily {
   return SESSION_MODELS[model ?? LEGACY_SESSION_MODEL].family;
 }

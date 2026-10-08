@@ -191,18 +191,6 @@ describe("the direct write: each writer writes the plain row and no old row", ()
     expect((row.data as { subject: { id: string } }).subject.id).toBe(id);
   });
 
-  it("internalSyncCanvasTodos (its insert and its moved due date)", async () => {
-    const t = convexTest({ schema, modules });
-    const dueAt = Date.now() + 4 * DAY_MS;
-    const assignment = { externalId: "77", courseCode: "CS 101", name: "Lab 3", htmlUrl: "https://canvas.example/77", dueAt, submitted: false };
-    await t.mutation(internal.ttsCanvas.internalSyncCanvasTodos, { assignments: [assignment] });
-    const [row] = await t.run((ctx) => ctx.db.query("todos").collect());
-    expect(await plainOf(t, "todos", row._id)).toMatchObject({ statement: "CS 101: Lab 3", dueAt });
-    await t.mutation(internal.ttsCanvas.internalSyncCanvasTodos, { assignments: [{ ...assignment, dueAt: dueAt + DAY_MS }] });
-    expect(await plainOf(t, "todos", row._id)).toMatchObject({ dueAt: dueAt + DAY_MS });
-    await plainOnly(t);
-  });
-
   it("leftToRemap after a run of writes counts what the way back carries, and copyBack brings it to zero", async () => {
     const { t, tom, id } = await setup();
     // A todo from before step C: its old row and copy, stamped by a first

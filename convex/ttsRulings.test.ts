@@ -1389,13 +1389,16 @@ describe("a ruling from Tom's words", () => {
       // Each with its plain copy, as the dual write stores a todo.
       return { paperId, otherId };
     });
-    // The job's pen: the agenda names the dentist todo and the paper todo.
-    const sessionId = await t.mutation(internal.claudeSessions.internalCreateWeeklySession, {
+    // A weekly session whose agenda names the dentist todo and the paper
+    // todo, as the removed Friday job wrote one (its door went with the job
+    // in the redesign of 2026-10-06; old rows keep their agenda).
+    const sessionId = await tom.mutation(api.claudeSessions.createSession, {
       title: "Weekly 2026-09-11",
+      kind: "weekly",
+      repo: "none",
       initialPrompt: "the agenda",
-      day: "2026-09-11",
-      agendaSubjects: [todoId, paperId],
     });
+    await t.run(async (ctx) => ctx.db.patch(sessionId, { agendaDay: "2026-09-11", agendaSubjects: [todoId, paperId] }));
     await tom.mutation(api.claudeSessions.sendMessage, {
       sessionId,
       text: "fork 1: archive the dentist one. fork 2: approve the paper batch. and archive the passport one.",

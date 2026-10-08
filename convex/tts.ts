@@ -9,7 +9,6 @@ import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { requireTom, requireTomOrAgent } from "./authRoles";
-import { INTEGRATION_SOURCE, integrationName } from "./ttsIntegrations";
 import {
   CODE_TODO_REPOS,
   READINESS,
@@ -525,9 +524,8 @@ export async function recordMissedKeepingDate(
     ],
     rolledOverDueAt: todo.dueAt,
   });
-  // `rollover: true` marks the row as the system's, not Tom's: the weekly
-  // gather counts a date outcome as a touch of his unless it carries this
-  // (convex/ttsWeekly.ts isTomTouch). Written here, not through logEvent: the
+  // `rollover: true` marks the row as the system's, not Tom's: a date outcome
+  // without it is a touch of his. Written here, not through logEvent: the
   // row is in hand and its id is the plain one, and logEvent would read the
   // whole todo again to resolve that id, a read the rollover's byte budget
   // (convex/ttsDigest.ts rollMissed) does not count.
@@ -625,15 +623,6 @@ export const internalCapture = internalMutation({
         .first();
       if (existing) return existing._id;
     }
-    // A RULING ABOUT AN INTEGRATION IS LABELLED WHERE IT IS WRITTEN. The
-    // statement `integration: outlook` is Tom turning a poller off
-    // (convex/ttsIntegrations.ts), and every poller asks which ones are off
-    // before it captures anything. A statement prefix cannot be indexed, so
-    // the shape is read once — here, at the one place a todo is born from a
-    // message — and recorded as the row's source; the pollers' read is then
-    // the handful of rows under that source rather than the whole archive.
-    const declaredSource =
-      integrationName(statement) === null ? source : INTEGRATION_SOURCE;
     // A dated capture names its dateKind: dueAt is the time, dateKind says
     // who imposed it, and both ride the row. Without dueAt the row stays
     // whenever, exactly as a plain capture did.
@@ -648,7 +637,7 @@ export const internalCapture = internalMutation({
       dueAt,
       ...(dueAt !== undefined ? { dateKind } : {}),
       threadMessageId,
-      source: declaredSource,
+      source,
       provenance,
       slackChannel,
       slackTs,
@@ -658,7 +647,7 @@ export const internalCapture = internalMutation({
       createdAt: now,
       updatedAt: now,
     });
-    await logEvent(ctx, "captured", id, { source: declaredSource });
+    await logEvent(ctx, "captured", id, { source });
     return id;
   },
 });

@@ -1636,10 +1636,9 @@ export default defineSchema({
     nextSeq: v.number(),
     createdAt: v.number(),
     // ── The weekly session's agenda (the lifeos update, phase 8; spec §11) ──
-    // Set only on kind "weekly", by the Friday job through POST /tts/session
-    // (claudeSessions.internalCreateWeeklySession). `agendaDay` is the
-    // YYYY-MM-DD the job ran for — one weekly session per day, refused on
-    // by_kind_agenda_day. `agendaSubjects` is the todo and batch ids the
+    // Set only on kind "weekly", by the Friday job through POST /tts/session,
+    // both removed in the redesign of 2026-10-06; the rows it wrote keep
+    // them. `agendaDay` is the YYYY-MM-DD the job ran for. `agendaSubjects` is the todo and batch ids the
     // agenda's forks name: a weekly session's turns rule on these and on
     // nothing else (ttsRulings refuseUnlessSessionSubject). A weekly session
     // opened from the page carries neither and so rules on nothing.
