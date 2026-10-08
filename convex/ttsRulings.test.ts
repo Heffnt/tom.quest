@@ -904,7 +904,7 @@ describe("a ruling from Tom's words", () => {
     expect(ruling.provenance?.quote).toBe("archive the dentist one, I already went.");
   });
 
-  it("accepts a syntactically valid code subject from a cited code session", async () => {
+  it("refuses a code todo as a subject, the mirror being removed, and accepts a change from a cited code session", async () => {
     const t = testDb();
     const { tom, tomRow } = await sessionWithTurns(t, "code-block");
     const body = {
@@ -913,13 +913,16 @@ describe("a ruling from Tom's words", () => {
       subjectType: "code",
       quote: "archive the dentist one, I already went.",
     };
-    const response = await post(t, { ...body, subjectId: "tom.quest cmt-001" });
+    const refused = await post(t, { ...body, subjectId: "tom.quest cmt-001" });
+    expect(refused.status).toBe(400);
+    expect(await refused.text()).toContain("is not a change");
+    const response = await post(t, { ...body, subjectId: "tom.quest pr-12" });
     expect(response.status).toBe(200);
     const [ruling] = await tom.query(api.ttsRulings.listRulings, {});
     expect(ruling).toMatchObject({
       subjectType: "code",
       repo: "tom.quest",
-      externalId: "cmt-001",
+      externalId: "pr-12",
       verdict: "approve",
     });
   });

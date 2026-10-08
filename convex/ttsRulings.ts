@@ -470,6 +470,14 @@ async function resolveSubject(
   }
   const repo = subjectId.slice(0, cut);
   const externalId = subjectId.slice(cut + 1);
+  // The code mirror and its briefs are removed, so a code todo is nothing the
+  // record holds or showed Tom: a code ruling names a change (a pull request
+  // or a commit, isChangeSubject) and nothing else.
+  if (!isChangeSubject(externalId)) {
+    throw new Error(
+      `refused: ${subjectId} is not a change (a pull request or a commit); code todos are no longer mirrored, so a ruling names a change or a todo`,
+    );
+  }
   return { repo, externalId };
 }
 
