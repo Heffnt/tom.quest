@@ -46,6 +46,16 @@ export async function POST(req: NextRequest) {
   if (!viewer) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+  // ONLY TOM RUNS THE CANVAS AGENT. Each run spends model calls on this
+  // deployment's provider keys, and /canvas is open to every signed-in
+  // account, so a check of the provider against the viewer's role alone let
+  // any account that signed up spend them (guarantee G2). isTom is the app's
+  // one answer to who Tom is (convex/authRoles.ts roleAccess, the "tom"
+  // role), the one requireTom in app/lib/convex-server.ts reads; the route
+  // keeps its own token parsing, which takes the Bearer scheme in any case.
+  if (!viewer.isTom) {
+    return NextResponse.json({ error: "Tom access required" }, { status: 403 });
+  }
   const allowed = providersForRole(viewer.isTom);
   if (!allowed.some((p) => p.id === provider)) {
     return NextResponse.json(
