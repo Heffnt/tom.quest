@@ -5,8 +5,8 @@
 // tomSymbolMetrics(symbolParams). The first test pins the shipped default
 // rendering (it must not have changed); the rest fail if the constants return.
 
-import { describe, it, expect, vi } from "vitest";
-import { render } from "@testing-library/react";
+import { afterEach, describe, it, expect, vi } from "vitest";
+import { render, waitFor } from "@testing-library/react";
 
 vi.mock("next/font/local", () => ({
   default: () => ({ className: "manrope", style: { fontFamily: "Manrope" } }),
@@ -73,5 +73,40 @@ describe("TomLogo bars variant", () => {
     const tilted = bars({ ...DEFAULT_TOM_PARAMS, mAngle: 50, dotSize: 90 });
     expect(tilted.barThick).toBeCloseTo(base.barThick, 6);
     expect(tilted.topBarY).toBeCloseTo(base.topBarY, 6);
+  });
+});
+
+// Regression: fontReady was Promise.all(fonts.load, fonts.ready) with no
+// catch. Where a face in the family fails to load (local("Arial") on a system
+// without it) the load rejects, the measurement never ran, and the wordmark
+// kept the estimated letter widths, so its letters overlapped on a wider face.
+describe("TomLogo measurement when a font fails to load", () => {
+  const WIDTHS: Record<string, number> = { t: 70, om: 140, ues: 160 };
+  afterEach(() => {
+    vi.restoreAllMocks();
+    delete (document as { fonts?: unknown }).fonts;
+  });
+
+  it("measures the letters once both the failed load and `ready` have settled, and lays the wordmark out from the measured widths", async () => {
+    let fontsReady: () => void = () => {};
+    const ready = new Promise<void>((resolve) => { fontsReady = resolve; });
+    Object.defineProperty(document, "fonts", {
+      configurable: true,
+      value: { load: () => Promise.reject(new Error("local(\"Arial\") failed to load")), ready },
+    });
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      return { width: WIDTHS[this.textContent ?? ""] ?? 0 } as DOMRect;
+    });
+    const { container } = render(<TomLogo fontSize={FONT_SIZE} variant="plain" />);
+    const xOf = (word: string) => Number(Array.from(container.querySelectorAll("text")).filter((el) => el.textContent === word).map((el) => el.getAttribute("x"))[0]);
+    const tXs = () => Array.from(container.querySelectorAll("text")).filter((el) => el.textContent === "t").map((el) => Number(el.getAttribute("x")));
+    // The load has failed, `ready` has not settled: the widths are still the
+    // estimate (1.453 em for "ues").
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(Math.max(...tXs()) - xOf("ues")).toBeCloseTo(1.453 * FONT_SIZE, 6);
+    fontsReady();
+    // The measured width of "ues" is 160, of "t" 70.
+    await waitFor(() => expect(Math.max(...tXs()) - xOf("ues")).toBeCloseTo(WIDTHS.ues, 6));
+    expect(xOf("om") - Math.min(...tXs())).toBeCloseTo(WIDTHS.t, 6);
   });
 });
