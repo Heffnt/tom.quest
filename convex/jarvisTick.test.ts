@@ -67,18 +67,12 @@ describe("a tick task's outcome", () => {
 
   it("is job-ok when the task returns no failure", async () => {
     const t = convexTest({ schema, modules });
-    expect(await t.action(internal.jarvis.tick.runTask, { name: "evict", leaseId: await lease(t, "evict") })).toEqual({ ok: true });
+    expect(await t.action(internal.jarvis.tick.runTask, { name: "turing-health", leaseId: await lease(t, "turing-health") })).toEqual({ ok: true });
     expect((await outcomes(t)).map((row) => row.kind)).toEqual(["job-ok"]);
   });
 });
 
-describe("the tick's leases, and the daily eviction", () => {
-  // 2026-09-28 is in EDT: New York is UTC-4.
-  const nyAt = (hhmm: string, day = "2026-09-28") => Date.parse(`${day}T${hhmm}:00-04:00`);
-  const clean = (t: ReturnType<typeof convexTest>, name: string, at: number) =>
-    t.run(async (ctx) => {
-      await ctx.db.insert("events", { kind: "job-ok", at, provenance: { job: `tick:${name}` }, subject: `tick:${name}`, data: {} });
-    });
+describe("the tick's leases", () => {
   // `due` schedules each started task; this suite asks only what is due, so
   // the scheduled runs are cancelled before they start (a run finishing after
   // the test's backend is gone is an unhandled rejection).
@@ -99,12 +93,12 @@ describe("the tick's leases, and the daily eviction", () => {
       ctx.db.insert("events", {
         kind: "tick-started",
         at: 1,
-        provenance: { job: "tick:evict" },
-        subject: "tick:evict",
-        data: { task: "evict", timeoutMs: 1 },
+        provenance: { job: "tick:turing-health" },
+        subject: "tick:turing-health",
+        data: { task: "turing-health", timeoutMs: 1 },
       }),
     );
-    expect(await t.action(internal.jarvis.tick.runTask, { name: "evict", leaseId: successLease })).toEqual({ ok: true });
+    expect(await t.action(internal.jarvis.tick.runTask, { name: "turing-health", leaseId: successLease })).toEqual({ ok: true });
 
     vi.stubEnv("GITHUB_MIRROR_TOKEN", "");
     const failureLease = await t.run(async (ctx) =>
@@ -120,7 +114,7 @@ describe("the tick's leases, and the daily eviction", () => {
 
     const rows = await t.run(async (ctx) => ctx.db.query("events").collect());
     expect(rows.filter((row) => row.kind === "tick-started")).toEqual([]);
-    expect(rows.filter((row) => row.kind === "job-ok" && row.subject === "tick:evict")).toHaveLength(1);
+    expect(rows.filter((row) => row.kind === "job-ok" && row.subject === "tick:turing-health")).toHaveLength(1);
     expect(rows.filter((row) => row.kind === "job-failed" && row.subject === "tick:pull-requests")).toHaveLength(1);
   });
 
@@ -130,7 +124,7 @@ describe("the tick's leases, and the daily eviction", () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
       const t = convexTest({ schema, modules });
-      const first = nyAt("01:00");
+      const first = Date.parse("2026-09-28T01:00:00-04:00");
       expect(await started(t, first)).toContain("turing-health");
       expect(await started(t, first + 60_000)).not.toContain("turing-health");
       // An action cannot still be alive past its ten-minute execution limit.
@@ -146,46 +140,4 @@ describe("the tick's leases, and the daily eviction", () => {
     }
   });
 
-  // witness: a daily task ran every 30 minutes through the 4 a.m. hour, and
-  // a box down through that hour skipped the day.
-  it("comes due once a day from its New York time, not again after a clean run, and at any hour after", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    try {
-      const t = convexTest({ schema, modules });
-      expect(await started(t, nyAt("04:10"))).not.toContain("evict");
-      expect(await started(t, nyAt("04:15"))).toContain("evict");
-      await clean(t, "evict", nyAt("04:16"));
-      expect(await started(t, nyAt("04:45"))).not.toContain("evict");
-      expect(await started(t, nyAt("05:30"))).not.toContain("evict");
-      expect(await started(t, nyAt("07:10", "2026-09-29"))).toContain("evict");
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  // witness: the row eviction was the last Convex cron besides the silence
-  // alarm; it is a record-tick task now, due once a day from 4:15.
-  it("runs the eviction switch once a day from 4:15 as a tick task, and records it", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    try {
-      const t = convexTest({ schema, modules });
-      expect(await started(t, nyAt("04:10"))).not.toContain("evict");
-      expect(await started(t, nyAt("04:15"))).toContain("evict");
-      vi.setSystemTime(nyAt("09:00"));
-      expect(await t.action(internal.jarvis.tick.runTask, { name: "evict", leaseId: await lease(t, "evict") })).toEqual({ ok: true });
-      const rows = await t.run(async (ctx) => ({
-        ok: (await ctx.db.query("events").collect()).filter((row) => row.kind === "job-ok" && row.subject === "tick:evict"),
-        evicted: (await ctx.db.query("dtsEvents").collect()).filter((row) => row.kind === "agents-evicted"),
-      }));
-      // (The 4:15 tick's own scheduled run may also have landed: each run is
-      // one clean row and one "did nothing" event.)
-      expect(rows.ok).toHaveLength(1);
-      // The switch is off: every run says it did nothing.
-      expect(rows.evicted.length).toBeGreaterThan(0);
-      expect(rows.evicted.every((row) => (row.data as { disabled?: boolean }).disabled === true)).toBe(true);
-      expect(await started(t, nyAt("09:30"))).not.toContain("evict");
-    } finally {
-      vi.useRealTimers();
-    }
-  });
 });

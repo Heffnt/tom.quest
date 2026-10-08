@@ -262,10 +262,8 @@ const ROW = {
   createdAt: NOW,
 };
 
-// An old run: an index row with a stored version and no rows, which is the
-// one posture that draws the store control. It carries no sessionId, so the
-// same fixture session above does not make it live — a live run's outcome
-// block, and the line inside it, render for nothing.
+// An old run: an index row with a stored version and no rows. It carries no
+// sessionId, so the fixture session above does not make it live.
 const RUN = {
   _id: "runs|old",
   _creationTime: 0,
@@ -317,7 +315,6 @@ function load() {
     [getFunctionName(api.claudeSessions.getStreamBuf)]: null,
     [getFunctionName(api.claudeSessions.getPendingInbound)]: [],
     [getFunctionName(api.agents.get)]: RUN,
-    [getFunctionName(api.agents.materializeStatus)]: null,
     [getFunctionName(api.tts.listTodos)]: [TODO],
     [getFunctionName(api.tts.listMirror)]: [MIRROR],
     [getFunctionName(api.ttsCode.listCodeBriefs)]: [BRIEF],
@@ -480,19 +477,6 @@ const CASES: { file: string; render: () => void }[] = [
           onOpenSession={noop}
         />,
       );
-      // The same component at the other posture, because the control that
-      // opens an old run from the store appears in neither of the live
-      // session's states: it needs a run that is not live, whose rows are
-      // outside the window, and whose file has a stored version.
-      render(
-        <Agent
-          runId={RUN.runId}
-          depth={0}
-          now={NOW}
-          onOpenRun={noop}
-          onOpenSession={noop}
-        />,
-      );
     },
   },
 ];
@@ -615,28 +599,7 @@ describe("every mutation the screens fire is named by a popover", () => {
     expect(real.size).toBeGreaterThan(5);
   });
 
-  /**
-   * Mutations no control fires, and the reason each one is not a control's
-   * effect. Nothing can name a call nothing is attached to, so these are
-   * exempt from THIS direction and from nothing else — direction 1 still
-   * presses every control on both screens, so the day one of these grows a
-   * button, that button fails there for having no popover.
-   */
-  const NO_CONTROL = new Map([
-    [
-      "agents.markOpened",
-      "the page marking the run it drew as read, on arrival, so the 30-day row window moves forward",
-    ],
-  ]);
-
-  it("exempts only calls the screens still fire", () => {
-    // A stale exemption would quietly excuse a control added later under the
-    // same name.
-    expect([...NO_CONTROL.keys()].filter((c) => !firedInSource.has(c))).toEqual([]);
-  });
-
   for (const [call, where] of [...firedInSource].sort()) {
-    if (NO_CONTROL.has(call)) continue;
     it(`${call} (fired by ${where.join(", ")}) has a popover naming it`, () => {
       expect(named.has(call)).toBe(true);
     });

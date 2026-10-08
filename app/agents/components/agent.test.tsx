@@ -34,8 +34,6 @@ const convex = vi.hoisted(() => ({
   rows: {} as Record<string, unknown[]>,
   children: {} as Record<string, unknown[]>,
   sessions: {} as Record<string, unknown>,
-  /** The newest agents.materializeStatus answer, per agent. */
-  requests: {} as Record<string, unknown>,
   seen: [] as string[],
   /** Every mutation the page fired, as "<fn>:<args json>". */
   mutations: [] as string[],
@@ -76,8 +74,6 @@ vi.mock("convex/react", async () => {
             items: convex.children[a.agentId ?? ""] ?? EMPTY,
             nextCursor: null,
           };
-        case "agents:materializeStatus":
-          return convex.requests[a.agentId ?? ""] ?? null;
         case "claudeSessions:getSession":
           return convex.sessions[a.id ?? ""] ?? null;
         case "claudeSessions:getStreamBuf":
@@ -349,7 +345,6 @@ beforeEach(() => {
   convex.rows = {};
   convex.children = {};
   convex.sessions = {};
-  convex.requests = {};
   convex.seen = [];
   convex.mutations = [];
   onOpenRun.mockReset();
@@ -656,16 +651,11 @@ describe("a run that continues another", () => {
 });
 
 // ── ROWS THAT ARE NOT IN THE RECORD ─────────────────────────────────────────
-// Convex holds the run index and a bounded window of rows; the store holds
-// every version. So a run outside that window is a header, an outcome and no
-// transcript, and the line under the header is the only place the reader can
-// be told about it. It has four states, each of them a different thing being
-// true on the server — nothing asked for, a request the box has not reached
-// yet, a request the box refused, and the rows back — and the failure mode of
-// every one of them is a page that renders and says something false: a
-// control offered while a request is already queued, a refusal shown as a
-// spinner, a reason swallowed, or the line still standing over the rows it
-// says are absent.
+// Convex holds the run index and a bounded window of rows. A run outside that
+// window is a header, an outcome and no transcript, and the line under the
+// header is the only place the reader is told so. Nothing on the page brings
+// the rows back: the job that rebuilt them from the store was removed on
+// 2026-10-07, so the line offers no control.
 
 const OLD_RUN = "run-old";
 
@@ -703,71 +693,19 @@ const openOld = () =>
     />,
   );
 
-/** Every call to one mutation, with its arguments. */
-const fired = (fn: string) =>
-  convex.mutations.filter((call) => call.startsWith(`${fn}:`));
-
 describe("a run whose rows are not in the record", () => {
-  it("offers the one control that asks the box for them", () => {
+  it("says so, names the stored version, and offers no control", () => {
     convex.runs = { [OLD_RUN]: oldRun() };
     openOld();
 
     expect(body()).toContain("rows not in the record");
     expect(body()).toContain("old.jsonl");
     expect(body()).toContain("version dddddddddddd");
-
-    fireEvent.click(screen.getByText("open this agent from the store"));
-    expect(fired("agents:requestMaterialize")).toEqual([
-      `agents:requestMaterialize:{"agentId":"${OLD_RUN}"}`,
-    ]);
-    // An index-only run is not made evictable by being looked at: there is
-    // nothing to keep, so nothing marks it read.
-    expect(fired("agents:markOpened")).toEqual([]);
+    expect(body()).not.toContain("open this agent from the store");
+    expect(convex.mutations).toEqual([]);
   });
 
-  it("says the box is serving it while a request is pending, and offers nothing", () => {
-    convex.runs = { [OLD_RUN]: oldRun() };
-    convex.requests = {
-      [OLD_RUN]: {
-        _id: "mr1",
-        _creationTime: 0,
-        runId: OLD_RUN,
-        requestedBy: "tom",
-        requestedAt: NOW,
-        status: "pending",
-        slice: 2,
-      },
-    };
-    openOld();
-
-    // A plain sentence and no spinner: nothing is streaming, and a second
-    // press would queue nothing, so there is nothing to press.
-    expect(body()).toContain("opening from the store · slice 2");
-    expect(screen.queryByText("open this agent from the store")).toBeNull();
-  });
-
-  it("names the reason a request failed and brings the control back", () => {
-    convex.runs = { [OLD_RUN]: oldRun() };
-    convex.requests = {
-      [OLD_RUN]: {
-        _id: "mr2",
-        _creationTime: 0,
-        runId: OLD_RUN,
-        requestedBy: "tom",
-        requestedAt: NOW,
-        status: "failed",
-        reason: "object missing from store",
-        slice: 1,
-      },
-    };
-    openOld();
-
-    expect(body()).toContain("could not open · object missing from store");
-    // A transient store failure is one more press, never a dead end.
-    expect(screen.getByText("open this agent from the store")).toBeTruthy();
-  });
-
-  it("shows the rows and drops the line once they are back, and marks the run read", () => {
+  it("shows the rows and no such line when the record holds them", () => {
     convex.runs = { [OLD_RUN]: oldRun() };
     convex.rows = {
       [OLD_RUN]: [
@@ -776,151 +714,15 @@ describe("a run whose rows are not in the record", () => {
           runId: OLD_RUN,
           seq: 1000,
           kind: "assistant-text",
-          content: { text: "the old run, back from the store" },
+          content: { text: "the old run, in the record" },
         }),
       ],
     };
     openOld();
 
-    expect(screen.getByText("the old run, back from the store")).toBeTruthy();
+    expect(screen.getByText("the old run, in the record")).toBeTruthy();
     expect(body()).not.toContain("rows not in the record");
-    expect(screen.queryByText("open this agent from the store")).toBeNull();
-    // Reading a run keeps it: once per page load, fire and forget, no UI.
-    expect(fired("agents:markOpened")).toEqual([
-      `agents:markOpened:{"agentId":"${OLD_RUN}"}`,
-    ]);
-  });
-});
-
-// ── ROWS THAT CAME BACK FROM THE STORE ──────────────────────────────────────
-// runs.rowsSource records that a run's rows did not arrive as the transcript
-// file grew: a reader told by the audit's trace findings that an auditor did
-// not open a path should be able to see that the run itself did not open
-// whole. The fixture carries an outcome so Lead has something to draw even
-// when rowsSource is the only new fact under test.
-
-const SOURCE_RUN = "run-source";
-
-/** An ended run whose rows were materialized from the store. */
-function sourceRun(
-  rowsSourceOver: Record<string, unknown> = {},
-  fileOver: Record<string, unknown> = {},
-) {
-  return runDoc({
-    _id: "runs|source",
-    runId: SOURCE_RUN,
-    status: "ended",
-    outcome: {
-      totals: {
-        inputTokens: 10,
-        cacheReadTokens: 0,
-        cacheWriteTokens: 0,
-        cacheWrite5mTokens: 0,
-        cacheWrite1hTokens: 0,
-        cacheWriteBreakdownKnown: true,
-        outputTokens: 20,
-        thinkingTokens: 0,
-        totalTokens: 30,
-      },
-      turns: 3,
-      toolCalls: 2,
-    },
-    file: {
-      path: "/srv/runs/source.jsonl",
-      sourceHash: "a".repeat(64),
-      storedHash: "b".repeat(64),
-      bytes: 4096,
-      storedBytes: 4096,
-      committedLine: 120,
-      committedPrefixSha256: "c".repeat(64),
-      ...fileOver,
-    },
-    rowsSource: {
-      from: "store",
-      at: NOW,
-      parserVersion: "claude/2",
-      // `gitleaks:allow`: a content-addressed store path, not a key.
-      // generic-api-key matched it on the field NAME ending in “Key”.
-      storeKey: "runs/claude/box/x/y", // gitleaks:allow
-      rowsFromLine: 10,
-      rowsToLine: 120,
-      slices: 3,
-      droppedLines: 0,
-      partial: [],
-      ...rowsSourceOver,
-    },
-  });
-}
-
-const openSource = () =>
-  render(
-    <Agent
-      runId={SOURCE_RUN}
-      depth={0}
-      now={NOW}
-      onOpenRun={onOpenRun}
-      onOpenSession={onOpenSession}
-    />,
-  );
-
-describe("a run whose rows came back from the store", () => {
-  it("shows the total when the file records its whole length", () => {
-    convex.runs = { [SOURCE_RUN]: sourceRun({}, { totalLines: 500 }) };
-    convex.rows = {
-      [SOURCE_RUN]: [fileRow({ _id: "m-source-1", runId: SOURCE_RUN })],
-    };
-    openSource();
-
-    expect(body()).toContain("lines 10–120 of 500");
-  });
-
-  it("omits the total when nobody measured the file's whole length", () => {
-    convex.runs = { [SOURCE_RUN]: sourceRun() };
-    convex.rows = {
-      [SOURCE_RUN]: [fileRow({ _id: "m-source-1", runId: SOURCE_RUN })],
-    };
-    openSource();
-
-    expect(body()).toContain("lines 10–120");
-    expect(body()).not.toContain("10–120 of");
-  });
-
-  it("omits the dropped clause at zero and includes it otherwise", () => {
-    convex.runs = { [SOURCE_RUN]: sourceRun({ droppedLines: 0 }) };
-    convex.rows = {
-      [SOURCE_RUN]: [fileRow({ _id: "m-source-1", runId: SOURCE_RUN })],
-    };
-    openSource();
-    expect(body()).not.toContain("dropped");
-    cleanup();
-
-    convex.runs = { [SOURCE_RUN]: sourceRun({ droppedLines: 7 }) };
-    openSource();
-    expect(body()).toContain("7 dropped");
-  });
-
-  it("omits the partial clause when empty and prints the closed vocabulary verbatim otherwise", () => {
-    convex.runs = { [SOURCE_RUN]: sourceRun({ partial: [] }) };
-    convex.rows = {
-      [SOURCE_RUN]: [fileRow({ _id: "m-source-1", runId: SOURCE_RUN })],
-    };
-    openSource();
-    expect(body()).not.toContain("partial");
-    cleanup();
-
-    convex.runs = {
-      [SOURCE_RUN]: sourceRun({
-        partial: ["sidecar-missing", "row-cap-reached"],
-      }),
-    };
-    openSource();
-    expect(body()).toContain("partial: sidecar-missing, row-cap-reached");
-  });
-
-  it("draws no such line for a run with no rowsSource", () => {
-    loadTree();
-    root();
-    expect(body()).not.toContain("rows from the store");
+    expect(convex.mutations).toEqual([]);
   });
 });
 
