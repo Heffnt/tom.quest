@@ -20,7 +20,7 @@
 // is no second component for a subagent and no single-level fold.
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Doc, Id } from "@/convex/_generated/dataModel";
@@ -217,27 +217,6 @@ export default function Agent({
   const rowsEmpty =
     rows.length === 0 &&
     (pageStatus === "Exhausted" || pageStatus === "CanLoadMore");
-  const hasRows = rows.length > 0;
-
-  const markOpened = useMutation(api.agents.markOpened);
-
-  // READING AN AGENT IS WHAT KEEPS IT. agents.markOpened moves the row window
-  // forward 30 days, clamped so six reads in an afternoon are one write, and
-  // it does nothing at all for a run whose rows are not in the record — an
-  // index-only backlog run is not made evictable by being looked at. Fire and
-  // forget, once per page load: there is nothing for the reader to see.
-  //
-  // It is a write that fires on arrival, which app/AGENTS.md gates on Tom.
-  // TomGate mounts this component for nobody else and the mutation requires
-  // Tom itself, so the gate holds on both sides.
-  const marked = useRef<string | null>(null);
-  useEffect(() => {
-    if (depth !== 0 || resolvedRunId === undefined || !hasRows) return;
-    if (marked.current === resolvedRunId) return;
-    marked.current = resolvedRunId;
-    void markOpened({ agentId: resolvedRunId }).catch(() => {});
-  }, [depth, resolvedRunId, hasRows, markOpened]);
-
   const lead = useMemo(
     () => (
       <Lead
@@ -701,9 +680,8 @@ function Lead({
         )}
       </div>
       {rowsEmpty && run !== null && (
-        // The 30-day row window has passed this agent by, or it was never
-        // ingested at all (§23.4). Nothing brings the rows back into the
-        // record: the job that rebuilt them from the store was removed on
+        // The rows were never ingested, or an earlier eviction removed them.
+        // Nothing rebuilds them from the store: materialize was removed on
         // 2026-10-07 (design section 13.2), so the line says only that.
         <div className="font-mono text-[10px] text-text-faint break-words">
           rows not in the record · {run.file.path.split(/[\\/]/).pop() || "no file"} ·

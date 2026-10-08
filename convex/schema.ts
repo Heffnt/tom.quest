@@ -1792,8 +1792,7 @@ export default defineSchema({
   // its agent file. Chunks rather than file storage: the read side is a QUERY
   // (claudeSessions.getMessageOverflow) and ctx.storage.get is reachable only
   // from an action. A row is stamped only once every chunk it names is there
-  // and reassembles to its hash (agents.internalStampOverflow), and the
-  // eviction (agents.evictAgentStep) removes a row's chunks before the row.
+  // and reassembles to its hash (agents.internalStampOverflow).
   claudeMessageOverflow: defineTable({
     runId: v.optional(v.string()),
     seq: v.number(),
@@ -1920,14 +1919,12 @@ export default defineSchema({
     // `committedLine < totalLines` is exactly "this run's rows are partial".
     file: v.object({ path: v.string(), sourceHash: v.string(), storedHash: v.string(), bytes: v.number(), storedBytes: v.number(), committedLine: v.number(), committedPrefixSha256: v.string(), sidecarStoredHash: v.optional(v.string()), storeKey: v.optional(v.string()), incompleteTail: v.optional(v.boolean()), totalLines: v.optional(v.number()) }),
     ingestedAt: v.number(),
-    // The instant this run's rows become evictable. PRESENT IF AND ONLY IF the
-    // rows are in the record: ingest sets it, eviction clears it. That one
-    // invariant keeps the nightly scan a bounded read of runs that actually
-    // have something to remove, and makes eviction idempotent for free — the
-    // last act of evicting a run is to take it out of this index.
+    // Legacy row-window metadata. Ingest still sets it only for runs whose
+    // rows are in the record. Row eviction was removed with materialize on
+    // 2026-10-07; this field stays until the separate schema migration.
     rowsUntil: v.optional(v.number()),
-    // When eviction last removed this run's rows. The index row, the store key
-    // and every edge survive; only the transcript goes.
+    // A historic eviction timestamp. Row eviction was removed with materialize
+    // on 2026-10-07; this field stays until the separate schema migration.
     rowsEvictedAt: v.optional(v.number()),
   })
     // Point lookup on each ingest.
@@ -1946,8 +1943,8 @@ export default defineSchema({
     .index("by_reg_token", ["regToken"])
     // The nightly manifest walks changed store versions in a stable order.
     .index("by_ingested_at_and_run_id", ["ingestedAt", "runId"])
-    // The eviction scan. Because `rowsUntil` is absent on every index-only run,
-    // this index holds only runs with rows — which is what bounds the scan.
+    // Legacy row-window index. Row eviction was removed with materialize on
+    // 2026-10-07; this index stays until the separate schema migration.
     .index("by_rows_until", ["rowsUntil"])
     // The weekly simplification pass's gather (convex/ttsSimplify.ts), which
     // needs a time range over EVERY run in the window regardless of host and

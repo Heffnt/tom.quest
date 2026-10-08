@@ -1,4 +1,4 @@
-import { convexTest } from "convex-test";
+import { convexTest, type TestConvex } from "convex-test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
@@ -486,8 +486,8 @@ describe("agents", () => {
   });
 
   // witness: link only Claude roots by the SDK id and a Codex session's rows
-  // land under a run no session names — the page reads nothing for it, the
-  // labeller finds no session, and eviction treats its transcript as nobody's.
+  // land under a run no session names — the page and the labeller find no
+  // session for it.
   it("links a box Codex root to the session that names its run", async () => {
     const t = convexTest(schema, modules);
     const runId = "codex:box:019a7c1e-thread-1";
@@ -623,18 +623,12 @@ describe("agents", () => {
   });
 });
 
-// ── The row window, and eviction ──────────────────────────────────────────────
+// ── The legacy row-window metadata ───────────────────────────────────────────
 const EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 const STORE_KEY = "runs/claude/laptop/root-run/stored.jsonl.gz";
 const DAY_MS = 24 * 60 * 60 * 1000;
 const WINDOW_MS = 30 * DAY_MS;
-// 04:30 America/New_York in January (EST, UTC-5): the one hour the eviction
-// handler's guard lets through.
-const EVICTION_HOUR_UTC = Date.UTC(2026, 0, 15, 9, 30);
-
-// The schema-aware handle, so a helper may read a real index by name.
-const schemaTest = () => convexTest(schema, modules);
-type SchemaTest = ReturnType<typeof schemaTest>;
+type SchemaTest = TestConvex<typeof schema>;
 
 function storedRun(overrides: Record<string, unknown> = {}) {
   return run({ file: { ...run().file, storeKey: STORE_KEY }, ...overrides });
@@ -647,10 +641,6 @@ function backlogIngest(overrides: Record<string, unknown> = {}) {
 async function runRow(t: SchemaTest, runId: string) {
   return await t.run((ctx) => ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", runId)).unique());
 }
-async function evictedEvents(t: SchemaTest) {
-  return await t.run((ctx) => ctx.db.query("dtsEvents").withIndex("by_kind_at", (q) => q.eq("kind", "agents-evicted")).collect());
-}
-
 describe("agents: the row window", () => {
   afterEach(() => vi.unstubAllEnvs());
 
@@ -669,171 +659,6 @@ describe("agents: the row window", () => {
     expect((await runRow(grown, "claude:laptop:root-run"))?.rowsUntil).toBe(5000 + WINDOW_MS);
   });
 
-  it("moves the window on an opened run only past the one-day threshold", async () => {
-    const t = convexTest(schema, modules);
-    await t.mutation(internal.agents.internalIngest, ingest() as never);
-    await t.mutation(internal.agents.internalIngest, backlogIngest({ runId: "claude:laptop:index-only", rootRunId: "claude:laptop:index-only" }) as never);
-    const tom = await withTom(t);
-
-    expect(await tom.mutation(api.agents.markOpened, { agentId: "claude:laptop:root-run" })).toEqual({ ok: true, moved: true });
-    const moved = (await runRow(t, "claude:laptop:root-run"))?.rowsUntil;
-    expect(moved).toBeGreaterThan(2 + WINDOW_MS);
-    // Reading the same run again inside the day is not a second write.
-    expect(await tom.mutation(api.agents.markOpened, { agentId: "claude:laptop:root-run" })).toEqual({ ok: true, moved: false });
-    expect((await runRow(t, "claude:laptop:root-run"))?.rowsUntil).toBe(moved);
-    // Looking at an index-only run does not make it evictable.
-    expect(await tom.mutation(api.agents.markOpened, { agentId: "claude:laptop:index-only" })).toEqual({ ok: true, moved: false });
-    expect((await runRow(t, "claude:laptop:index-only"))?.rowsUntil).toBeUndefined();
-    expect(await tom.mutation(api.agents.markOpened, { agentId: "claude:laptop:absent-run" })).toEqual({ ok: true, moved: false });
-  });
-});
-
-describe("agents: eviction", () => {
-  afterEach(() => {
-    vi.unstubAllEnvs();
-    vi.useRealTimers();
-  });
-
-  async function seedEvictable(t: SchemaTest, now: number, rows = 450) {
-    const runId = "claude:laptop:root-run";
-    await t.run(async (ctx) => {
-      const existing = await ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", runId)).unique();
-      if (existing) await ctx.db.patch(existing._id, { rowsUntil: now - DAY_MS });
-      else await ctx.db.insert("runs", { ...storedRun({ status: "ended", startedAt: now - 61 * DAY_MS, lastLineAt: now - 60 * DAY_MS }), environment: "worker", ingestedAt: now, rowsUntil: now - DAY_MS } as never);
-      for (let seq = 0; seq < rows; seq += 1) {
-        const overflow = seq < 2 ? { sha256: "a".repeat(64), byteLength: 6, chunkCount: 2 } : undefined;
-        await ctx.db.insert("claudeMessages", { runId, seq, turn: 0, kind: "user", content: { text: "x" }, digest: "0123456789abcdef", depth: 0, createdAt: seq + 1, overflow, provenance: ROW_PROVENANCE } as never);
-        if (overflow) for (let index = 0; index < 2; index += 1) await ctx.db.insert("claudeMessageOverflow", { runId, seq, index, chunkCount: 2, text: "abc", createdAt: 1 } as never);
-      }
-    });
-    return runId;
-  }
-  async function transcript(t: SchemaTest, runId: string) {
-    return await t.run(async (ctx) => ({
-      rows: (await ctx.db.query("claudeMessages").withIndex("by_run_seq", (q) => q.eq("runId", runId)).collect()).length,
-      chunks: (await ctx.db.query("claudeMessageOverflow").withIndex("by_run_seq_index", (q) => q.eq("runId", runId)).collect()).length,
-      labels: (await ctx.db.query("runLabels").withIndex("by_run_at", (q) => q.eq("runId", runId)).collect()).length,
-    }));
-  }
-  async function tick(t: SchemaTest) {
-    await t.mutation(internal.agents.internalEvictTick, {});
-    await t.finishAllScheduledFunctions(vi.runAllTimers);
-  }
-
-  it("evicts rows and their chunks exactly once, and leaves the index row standing", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(EVICTION_HOUR_UTC);
-    vi.stubEnv("AGENTS_EVICTION_ENABLED", "1");
-    const t = convexTest(schema, modules);
-    const now = Date.now();
-    const runId = await seedEvictable(t, now);
-    await t.run((ctx) => ctx.db.insert("runLabels", { runId, source: "ruling", actor: "tom", polarity: "good", meaning: "kept the record", judgment: true, ref: "ruling:evict-test", at: now }));
-    expect(await transcript(t, runId)).toEqual({ rows: 450, chunks: 4, labels: 1 });
-
-    await tick(t);
-    expect(await transcript(t, runId)).toEqual({ rows: 0, chunks: 0, labels: 1 });
-    const evicted = await runRow(t, runId);
-    expect(evicted).toMatchObject({ runId, rowsEvictedAt: now, file: { storeKey: STORE_KEY } });
-    expect(evicted?.rowsUntil).toBeUndefined();
-    expect((await evictedEvents(t)).map((entry) => entry.data)).toEqual([
-      { at: now, runs: 1, rowsDeleted: 450, overflowChunksDeleted: 4, deferred: 0, truncated: false, oldestRowsUntil: null },
-    ]);
-
-    // A second tick over the same record touches nothing: the last act of
-    // evicting a run is to take it out of the scan index.
-    await tick(t);
-    expect((await evictedEvents(t))[1].data).toMatchObject({ runs: 0, rowsDeleted: 0, overflowChunksDeleted: 0, deferred: 0 });
-
-    // A third tick, after the rows came back from the store, evicts them again.
-    await t.mutation(internal.agents.internalIngest, retry(run({ status: "ended", lastLineAt: now - 60 * DAY_MS, file: { ...run().file, storeKey: STORE_KEY } }), [row(0)]) as never);
-    expect((await transcript(t, runId)).rows).toBe(1);
-    expect((await runRow(t, runId))?.rowsUntil).toBe(now - 60 * DAY_MS + WINDOW_MS);
-    await tick(t);
-    expect(await transcript(t, runId)).toEqual({ rows: 0, chunks: 0, labels: 1 });
-    expect((await evictedEvents(t))[2].data).toMatchObject({ runs: 1, rowsDeleted: 1, overflowChunksDeleted: 0 });
-  });
-
-  it("refuses a running run, a live session's run, and a run inside the window", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(EVICTION_HOUR_UTC);
-    vi.stubEnv("AGENTS_EVICTION_ENABLED", "1");
-    const t = convexTest(schema, modules);
-    const now = Date.now();
-    const sessionId = await session(t, { status: "running" });
-    const kept = [
-      { runId: "claude:laptop:still-running", status: "running", lastLineAt: now - 60 * DAY_MS },
-      { runId: "claude:laptop:live-session", status: "ended", lastLineAt: now - 60 * DAY_MS, sessionId },
-      { runId: "claude:laptop:recent-lines", status: "ended", lastLineAt: now - 60 * 60 * 1000 },
-    ];
-    await t.run(async (ctx) => {
-      for (const record of kept) {
-        await ctx.db.insert("runs", { ...storedRun({ ...record, rootRunId: record.runId, startedAt: 1 }), environment: "worker", ingestedAt: now, rowsUntil: now - DAY_MS } as never);
-        await ctx.db.insert("claudeMessages", { runId: record.runId, seq: 0, turn: 0, kind: "user", content: { text: "x" }, provenance: ROW_PROVENANCE, digest: "0123456789abcdef", depth: 0, createdAt: 1 } as never);
-      }
-    });
-
-    await tick(t);
-    for (const record of kept) {
-      expect((await transcript(t, record.runId)).rows, record.runId).toBe(1);
-      expect((await runRow(t, record.runId))?.rowsUntil, record.runId).toBe(now + DAY_MS);
-    }
-    expect((await evictedEvents(t))[0].data).toMatchObject({ runs: 0, rowsDeleted: 0, deferred: 3, truncated: false, oldestRowsUntil: now + DAY_MS });
-  });
-
-  // witness: keep only a LIVE session's run and a session Tom ended last week
-  // loses its transcript tonight: its run's last line is older than the
-  // window, and reading a session through its session never moves the run's
-  // window.
-  it("keeps a session's run until the session has been ended for the window", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(EVICTION_HOUR_UTC);
-    vi.stubEnv("AGENTS_EVICTION_ENABLED", "1");
-    const t = convexTest(schema, modules);
-    const now = Date.now();
-    const endedLastWeek = await session(t, { status: "ended", statusChangedAt: now - 7 * DAY_MS });
-    const endedLongAgo = await session(t, { status: "ended", statusChangedAt: now - 45 * DAY_MS });
-    const records = [
-      { runId: "claude:laptop:ended-last-week", sessionId: endedLastWeek },
-      { runId: "claude:laptop:ended-long-ago", sessionId: endedLongAgo },
-    ];
-    await t.run(async (ctx) => {
-      for (const record of records) {
-        await ctx.db.insert("runs", { ...storedRun({ ...record, rootRunId: record.runId, status: "ended", startedAt: 1, lastLineAt: now - 60 * DAY_MS }), environment: "session", ingestedAt: now, rowsUntil: now - DAY_MS } as never);
-        await ctx.db.insert("claudeMessages", { runId: record.runId, seq: 0, turn: 0, kind: "user", content: { text: "x" }, provenance: ROW_PROVENANCE, digest: "0123456789abcdef", depth: 0, createdAt: 1 } as never);
-      }
-    });
-
-    await tick(t);
-    expect((await transcript(t, "claude:laptop:ended-last-week")).rows).toBe(1);
-    expect((await runRow(t, "claude:laptop:ended-last-week"))?.rowsUntil).toBe(now + DAY_MS);
-    expect((await transcript(t, "claude:laptop:ended-long-ago")).rows).toBe(0);
-  });
-
-  it("deletes nothing while AGENTS_EVICTION_ENABLED is unset, and says so", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(EVICTION_HOUR_UTC);
-    const t = convexTest(schema, modules);
-    const runId = await seedEvictable(t, Date.now(), 3);
-    expect(await t.mutation(internal.agents.internalEvictTick, {})).toEqual({ ok: true, disabled: true });
-    await t.finishAllScheduledFunctions(vi.runAllTimers);
-    expect((await transcript(t, runId)).rows).toBe(3);
-    expect((await evictedEvents(t))[0].data).toMatchObject({ runs: 0, rowsDeleted: 0, deferred: 0, disabled: true });
-    expect((await runRow(t, runId))?.rowsUntil).toBe(Date.now() - DAY_MS);
-  });
-
-  // witness: the old cron's local-hour guard survived after record-tick took
-  // ownership of the schedule, so a late daily run quietly did no eviction.
-  it("runs when record-tick calls it outside the old eviction hour", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(Date.UTC(2026, 0, 15, 20, 0));
-    vi.stubEnv("AGENTS_EVICTION_ENABLED", "1");
-    const t = convexTest(schema, modules);
-    const runId = await seedEvictable(t, Date.now(), 3);
-    await t.mutation(internal.agents.internalEvictTick, {});
-    await t.finishAllScheduledFunctions(vi.runAllTimers);
-    expect((await transcript(t, runId)).rows).toBe(0);
-    expect((await evictedEvents(t))[0].data).toMatchObject({ runs: 1, rowsDeleted: 3 });
-  });
 });
 
 // ── runs.internalRunTrace: the audit's own run, by its token ─────────────────

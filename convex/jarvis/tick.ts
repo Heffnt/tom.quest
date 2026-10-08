@@ -16,9 +16,6 @@
 //   pull-requests   the open pull requests mirror, and the landing of every
 //                   approved one whose gate turned green: every 5 minutes.
 //   code-mirror     tom.quest's vqc/todos.yaml beside the life todos: 6 h.
-//   evict           the agents' row eviction (a switch, OFF by default: the
-//                   run then only records that it did nothing), once a day
-//                   from 4:15 New York, until it has run clean that day.
 
 import { v } from "convex/values";
 import { httpAction, internalAction, internalMutation, type QueryCtx } from "../_generated/server";
@@ -28,22 +25,17 @@ import { jarvisAuth, jsonResponse } from "./auth";
 import { JOB_FAILED, JOB_OK } from "./jobs";
 import { recordEvent } from "./events";
 import { insertEvent } from "./record";
-import { TTS_PREP_NY_HOUR, nyCalendarDayKey, nyHhmm } from "../ttsShared";
 
 const MINUTE = 60_000;
 const ACTION_LIMIT_MS = 10 * MINUTE;
-const MUTATION_LIMIT_MS = MINUTE;
 const TICK_STARTED = "tick-started";
 
 type Task = {
-  /** The cadence; or, for a once-a-day task, the New York time it comes due
-   *  (it is then due until a clean run that day). */
-  when: { everyMs: number } | { dailyAt: { hour: number; minute: number } };
+  /** The cadence. */
+  when: { everyMs: number };
   /** A queued run older than this cannot still be alive and may be retried. */
   timeoutMs: number;
-  run:
-    | { action: FunctionReference<"action", "internal", Record<string, unknown>> }
-    | { mutation: FunctionReference<"mutation", "internal", Record<string, unknown>> };
+  run: { action: FunctionReference<"action", "internal", Record<string, unknown>> };
 };
 
 /** The tasks by name. A cadence is a floor: the box ticks every minute, so a
@@ -52,14 +44,6 @@ const TICK_TASKS: Record<string, Task> = {
   "turing-health": { when: { everyMs: MINUTE }, timeoutMs: ACTION_LIMIT_MS, run: { action: internal.serverHealth.pollTuring } },
   "pull-requests": { when: { everyMs: 5 * MINUTE }, timeoutMs: ACTION_LIMIT_MS, run: { action: internal.observeMerge.refreshOpenPulls } },
   "code-mirror": { when: { everyMs: 6 * 60 * MINUTE }, timeoutMs: ACTION_LIMIT_MS, run: { action: internal.ttsSync.refreshMirror } },
-  // The row eviction switch (convex/agents.ts internalEvictTick; OFF unless
-  // AGENTS_EVICTION_ENABLED, and then it says so in its event), once a day
-  // from 4:15, before the digest.
-  evict: {
-    when: { dailyAt: { hour: TTS_PREP_NY_HOUR, minute: 15 } },
-    timeoutMs: MUTATION_LIMIT_MS,
-    run: { mutation: internal.agents.internalEvictTick },
-  },
 };
 
 /** The ticks' own slack: a task whose last run was a few seconds short of its
@@ -116,21 +100,10 @@ export const due = internalMutation({
     const started: string[] = [];
     for (const [name, task] of Object.entries(TICK_TASKS)) {
       const job = jobOf(name);
-      const { ok, failed, finished, inFlight } = await taskState(ctx, name, now);
+      const { finished, inFlight } = await taskState(ctx, name, now);
       if (inFlight) continue;
       const last = finished?.at ?? 0;
-      if ("everyMs" in task.when) {
-        if (now - last < task.when.everyMs - EARLY_MS) continue;
-      } else {
-        // Once a day: from its New York time, at any hour after, until a
-        // clean run that New York day (a box down past the hour still runs
-        // it when it comes back); a failed run is retried at the next tick.
-        const { hour, minute } = task.when.dailyAt;
-        const [nowHour, nowMinute] = nyHhmm(now).split(":").map(Number);
-        if (nowHour * 60 + nowMinute < hour * 60 + minute) continue;
-        if (ok !== null && nyCalendarDayKey(ok.at) === nyCalendarDayKey(now)) continue;
-        if (failed !== null && now - failed.at < MINUTE - EARLY_MS) continue;
-      }
+      if (now - last < task.when.everyMs - EARLY_MS) continue;
       const leaseId = await insertEvent(ctx, {
         kind: TICK_STARTED,
         at: now,
@@ -184,9 +157,7 @@ export const runTask = internalAction({
     if (task === undefined) throw new Error(`no tick task named ${name}`);
     let error: string | null = null;
     try {
-      const result: unknown = "action" in task.run
-        ? await ctx.runAction(task.run.action, {})
-        : await ctx.runMutation(task.run.mutation, {});
+      const result: unknown = await ctx.runAction(task.run.action, {});
       const failures = failuresOf(result);
       if (failures.length > 0) error = failures.join("; ");
     } catch (e) {

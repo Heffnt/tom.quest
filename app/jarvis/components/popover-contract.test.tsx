@@ -599,28 +599,7 @@ describe("every mutation the screens fire is named by a popover", () => {
     expect(real.size).toBeGreaterThan(5);
   });
 
-  /**
-   * Mutations no control fires, and the reason each one is not a control's
-   * effect. Nothing can name a call nothing is attached to, so these are
-   * exempt from THIS direction and from nothing else — direction 1 still
-   * presses every control on both screens, so the day one of these grows a
-   * button, that button fails there for having no popover.
-   */
-  const NO_CONTROL = new Map([
-    [
-      "agents.markOpened",
-      "the page marking the run it drew as read, on arrival, so the 30-day row window moves forward",
-    ],
-  ]);
-
-  it("exempts only calls the screens still fire", () => {
-    // A stale exemption would quietly excuse a control added later under the
-    // same name.
-    expect([...NO_CONTROL.keys()].filter((c) => !firedInSource.has(c))).toEqual([]);
-  });
-
   for (const [call, where] of [...firedInSource].sort()) {
-    if (NO_CONTROL.has(call)) continue;
     it(`${call} (fired by ${where.join(", ")}) has a popover naming it`, () => {
       expect(named.has(call)).toBe(true);
     });

@@ -693,10 +693,6 @@ const openOld = () =>
     />,
   );
 
-/** Every call to one mutation, with its arguments. */
-const fired = (fn: string) =>
-  convex.mutations.filter((call) => call.startsWith(`${fn}:`));
-
 describe("a run whose rows are not in the record", () => {
   it("says so, names the stored version, and offers no control", () => {
     convex.runs = { [OLD_RUN]: oldRun() };
@@ -706,13 +702,10 @@ describe("a run whose rows are not in the record", () => {
     expect(body()).toContain("old.jsonl");
     expect(body()).toContain("version dddddddddddd");
     expect(body()).not.toContain("open this agent from the store");
-    // An index-only run is not made evictable by being looked at: there is
-    // nothing to keep, so nothing marks it read.
-    expect(fired("agents:markOpened")).toEqual([]);
     expect(convex.mutations).toEqual([]);
   });
 
-  it("shows the rows and no such line when the record holds them, and marks the run read", () => {
+  it("shows the rows and no such line when the record holds them", () => {
     convex.runs = { [OLD_RUN]: oldRun() };
     convex.rows = {
       [OLD_RUN]: [
@@ -729,10 +722,7 @@ describe("a run whose rows are not in the record", () => {
 
     expect(screen.getByText("the old run, in the record")).toBeTruthy();
     expect(body()).not.toContain("rows not in the record");
-    // Reading a run keeps it: once per page load, fire and forget, no UI.
-    expect(fired("agents:markOpened")).toEqual([
-      `agents:markOpened:{"agentId":"${OLD_RUN}"}`,
-    ]);
+    expect(convex.mutations).toEqual([]);
   });
 });
 

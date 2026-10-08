@@ -239,7 +239,6 @@ export const DAY_MS = 86_400_000;
 export const CONDITION_WINDOW_MS = 14 * DAY_MS;
 
 // The scheduling anchors: the guard hours the record's own clock reads.
-export const TTS_PREP_NY_HOUR = 4; // prep jobs run in the 4 a.m. hour
 export const TTS_DIGEST_NY_HOUR = DAY_START_HOUR; // the digest sends at 5 — the day boundary
 
 /** UTC offset of America/New_York in hours (-4 in EDT, -5 in EST). */
