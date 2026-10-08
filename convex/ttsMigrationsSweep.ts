@@ -80,9 +80,12 @@ export function sweptTables(names: readonly string[], declared: Record<string, u
   return [...names];
 }
 
-/** One call: up to `pageSize` rows of each table, counted and (unless a dry
- *  run) deleted, in one transaction. A table holding more than that is named
- *  in `more`; a table already empty, or never created, counts 0. */
+/** One call: up to `pageSize` rows in all (at most 1000, Convex's bound on
+ *  one mutation's writes being far above it), taken table by table in list
+ *  order, counted and (unless a dry run) deleted, in one transaction. A table
+ *  with rows the call did not reach is named in `more`; a table the budget
+ *  ran out before is looked at for one row only. A table already empty, or
+ *  never created, counts 0. Run again until `more` is empty. */
 export const internalPurgeSweptTables = internalMutation({
   args: {
     dryRun: v.optional(v.boolean()),
@@ -92,15 +95,20 @@ export const internalPurgeSweptTables = internalMutation({
   handler: async (ctx, args): Promise<{ dryRun: boolean; counts: Counts; more: string[] }> => {
     const dryRun = args.dryRun ?? false;
     const pageSize = args.pageSize ?? 1000;
+    if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > 1000) {
+      throw new Error("table sweep: pageSize is a whole number from 1 to 1000");
+    }
     const tables = sweptTables(args.tables ?? SWEPT_TABLES, schema.tables);
     const db = ctx.db as unknown as Untyped;
     const counts: Counts = {};
     const more: string[] = [];
+    let remaining = pageSize;
     for (const table of tables) {
-      const rows = await db.query(table).take(pageSize + 1);
-      const page = rows.slice(0, pageSize);
-      if (rows.length > pageSize) more.push(table);
+      const rows = await db.query(table).take(remaining + 1);
+      const page = rows.slice(0, remaining);
+      if (rows.length > remaining) more.push(table);
       counts[table] = page.length;
+      remaining -= page.length;
       if (!dryRun) for (const row of page) await db.delete(row._id);
     }
     await logEvent(ctx, dryRun ? `${SWEEP_PURGE_MIGRATION}-dry-run` : `${SWEEP_PURGE_MIGRATION}-migrated`, undefined, { ...counts, more: more.length });

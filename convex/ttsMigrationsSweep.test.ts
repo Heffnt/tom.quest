@@ -31,7 +31,7 @@ describe("internalPurgeSweptTables", () => {
     expect(again.counts).toEqual(dry.counts);
   });
 
-  it("deletes at most the page size of each table per real run, and says which hold more", async () => {
+  it("deletes at most the page size in all per real run, table by table, and says which still hold rows", async () => {
     const t = convexTest({ schema, modules });
     await t.run(async (ctx) => {
       const db = ctx.db as unknown as Untyped;
@@ -39,14 +39,27 @@ describe("internalPurgeSweptTables", () => {
       for (let i = 0; i < 2; i++) await db.insert("ttsVocabulary", { key: `k${i}` });
       await db.insert("runMaterializeRequests", { runId: "r" });
     });
-    const first = await t.mutation(internal.ttsMigrationsSweep.internalPurgeSweptTables, { pageSize: 2 });
-    expect(first.counts).toMatchObject({ dayLogItems: 2, ttsVocabulary: 2, runMaterializeRequests: 1 });
-    expect(first.more).toEqual(["dayLogItems"]);
-    const second = await t.mutation(internal.ttsMigrationsSweep.internalPurgeSweptTables, { pageSize: 2 });
-    expect(second.counts).toMatchObject({ dayLogItems: 1, ttsVocabulary: 0, runMaterializeRequests: 0 });
-    expect(second.more).toEqual([]);
+    const total = (counts: Record<string, number>) => Object.values(counts).reduce((sum, n) => sum + n, 0);
+    const runs = [];
+    for (let i = 0; i < 5; i++) {
+      const run = await t.mutation(internal.ttsMigrationsSweep.internalPurgeSweptTables, { pageSize: 2 });
+      runs.push(run);
+      if (run.more.length === 0) break;
+    }
+    // Six rows at two a call: three calls, each deleting two in all, the last
+    // with nothing left over.
+    expect(runs.map((run) => total(run.counts))).toEqual([2, 2, 2]);
+    expect(runs[0].more.length).toBeGreaterThan(0);
+    expect(runs.at(-1)?.more).toEqual([]);
     const after = await t.mutation(internal.ttsMigrationsSweep.internalPurgeSweptTables, { dryRun: true });
     expect(Object.values(after.counts).every((n) => n === 0)).toBe(true);
+  });
+
+  it("refuses a page size outside 1 to 1000", async () => {
+    const t = convexTest({ schema, modules });
+    for (const pageSize of [0, 1001, 2.5]) {
+      await expect(t.mutation(internal.ttsMigrationsSweep.internalPurgeSweptTables, { pageSize })).rejects.toThrow(/pageSize/);
+    }
   });
 
   it("refuses a declared table and leaves its rows", async () => {
