@@ -104,7 +104,10 @@ export const internalRegisterSession = internalMutation({
 /**
  * One event of a subagent's life: its start (the row is written, state
  * running), its report (state reported) or its end with no report, and a
- * resume by the session host. Idempotent: a start for a row that exists
+ * resume by the session host. A resume with `continued` true is the same
+ * resume carrying on under the new session id Claude Code gave it: it moves
+ * the row's resumed session and transcript and is not counted again, so one
+ * resume never uses up two of the host's MAX_RESUMES. Idempotent: a start for a row that exists
  * changes nothing, and an end of an ended row changes nothing. A brief sent
  * with any event fills a row whose brief is still empty: the hook reads it
  * from the subagent's own transcript, which may not hold it yet at the start.
@@ -120,6 +123,7 @@ export const internalSubagentEvent = internalMutation({
     cwd: v.optional(v.string()),
     resumedSessionId: v.optional(v.string()),
     resumedTranscriptPath: v.optional(v.string()),
+    continued: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     const now = Date.now();
@@ -149,8 +153,7 @@ export const internalSubagentEvent = internalMutation({
     if (args.brief && row.brief === "") await ctx.db.patch(row._id, { brief: cut(args.brief, BRIEF_MAX) });
     if (args.event === "resumed") {
       await ctx.db.patch(row._id, {
-        resumedAt: now,
-        resumeCount: (row.resumeCount ?? 0) + 1,
+        ...(args.continued === true ? {} : { resumedAt: now, resumeCount: (row.resumeCount ?? 0) + 1 }),
         ...(args.resumedSessionId !== undefined ? { resumedSessionId: args.resumedSessionId } : {}),
         ...(args.resumedTranscriptPath !== undefined ? { resumedTranscriptPath: args.resumedTranscriptPath } : {}),
       });

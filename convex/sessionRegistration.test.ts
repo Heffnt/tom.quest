@@ -179,6 +179,11 @@ describe("a subagent's row", () => {
     await t.mutation(internal.sessionRegistration.internalSubagentEvent, { event: "resumed", agentId: "a123", resumedSessionId: "s-2", resumedTranscriptPath: "/p/s-2.jsonl" });
     running = (await t.query(internal.sessionRegistration.internalRunningSubagents, {})).page;
     expect(running[0]).toMatchObject({ resumeCount: 1, resumedSessionId: "s-2" });
+    // The same resume carrying on under a new id: the row follows it, the
+    // count stays.
+    await t.mutation(internal.sessionRegistration.internalSubagentEvent, { event: "resumed", agentId: "a123", resumedSessionId: "s-3", resumedTranscriptPath: "/p/s-3.jsonl", continued: true });
+    running = (await t.query(internal.sessionRegistration.internalRunningSubagents, {})).page;
+    expect(running[0]).toMatchObject({ resumeCount: 1, resumedSessionId: "s-3", resumedTranscriptPath: "/p/s-3.jsonl" });
     await t.mutation(internal.sessionRegistration.internalSubagentEvent, { event: "reported", agentId: "a123", brief: "a later brief" });
     await t.mutation(internal.sessionRegistration.internalSubagentEvent, { event: "ended-without-report", agentId: "a123" });
     expect((await t.query(internal.sessionRegistration.internalRunningSubagents, {})).page).toEqual([]);
