@@ -280,17 +280,6 @@ describe("TTS todos", () => {
     expect(after).toHaveLength(3);
   });
 
-  it("refuses to capture a thread message that already became a day-log entry", async () => {
-    const t = convexTest({ schema, modules });
-    const threadMessageId = "evt_conflict_todo_first";
-    await t.mutation(internal.dayLog.internalSubmitFromThread, { text: "a fact", threadMessageId });
-    await expect(t.mutation(internal.tts.internalCapture, {
-      statement: "buy climbing tape",
-      source: "thread",
-      threadMessageId,
-    })).rejects.toThrow("this thread message already became a day-log entry");
-  });
-
   it("returns the stored todo unchanged on a retry", async () => {
     const t = convexTest({ schema, modules });
     const threadMessageId = "evt_retry_todo";

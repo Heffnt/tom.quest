@@ -1,20 +1,19 @@
 import { convexTest } from "convex-test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { internal } from "./_generated/api";
-import type { Doc, Id } from "./_generated/dataModel";
+import type { Doc } from "./_generated/dataModel";
 import schema from "./schema";
 import {
   ARCHIVE_WHOLE_MIGRATION,
-  DAY_LOG_COPY_MIGRATION,
   RESTART_PROVENANCE,
   RESTART_TODOS,
-  factKindOf,
 } from "./ttsMigrations";
 
 // The redesign's restart (convex/ttsMigrations.ts, 2026-10-06): the old todos
-// archived whole and reversibly, the seven inserted once, and the day log's
-// items copied into the events table with their kinds. These are the local
-// harness the prod dry runs are read against.
+// archived whole and reversibly and the seven inserted once. These are the
+// local harness the prod dry runs are read against. The copy of the day log's
+// items into the events table ran in production on October 6 and went with
+// the day log on October 7.
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 const harness = () => convexTest({ schema, modules });
@@ -194,60 +193,5 @@ describe("the fact kinds on the legacy route", () => {
     }
     const rows = await t.run((ctx) => ctx.db.query("events").collect());
     expect(rows.filter((r) => ["meal", "weight", "training", "did"].includes(r.kind))).toHaveLength(0);
-  });
-});
-
-describe("the day log into the events table", () => {
-  async function seedDayLog(t: T) {
-    return await t.run(async (ctx) => {
-      const entryId = await ctx.db.insert("dayLogEntries", {
-        text: "ate oats, weighed 180, hung 20mm for 10s, climbed fingers, sore knee, wrote the paper",
-        createdAt: Date.UTC(2026, 9, 5, 12),
-        day: "2026-10-05",
-        status: "applied",
-      });
-      const base = { entryId, day: "2026-10-05", createdAt: Date.UTC(2026, 9, 5, 12, 1) };
-      const items: Id<"dayLogItems">[] = [];
-      items.push(await ctx.db.insert("dayLogItems", { ...base, type: "food", quote: "ate oats", summary: "oats" }));
-      items.push(await ctx.db.insert("dayLogItems", { ...base, type: "measurement", quote: "weighed 180", summary: "weight", metric: "weight", value: 180, unit: "lb", partOfDay: "morning" }));
-      items.push(await ctx.db.insert("dayLogItems", { ...base, type: "measurement", quote: "hung 20mm for 10s", summary: "hang", metric: "hang_20mm", value: 10, unit: "s", partOfDay: "unknown" }));
-      items.push(await ctx.db.insert("dayLogItems", { ...base, type: "workout", quote: "climbed fingers", summary: "climbing", activity: "climb", bodyParts: ["fingers"] }));
-      items.push(await ctx.db.insert("dayLogItems", { ...base, type: "symptom", quote: "sore knee", summary: "sore knee" }));
-      items.push(await ctx.db.insert("dayLogItems", { ...base, type: "work", quote: "wrote the paper", summary: "paper" }));
-      return { entryId, items };
-    });
-  }
-
-  it("maps each item type to its fact kind", () => {
-    expect(factKindOf({ type: "food" })).toBe("meal");
-    expect(factKindOf({ type: "measurement", metric: "weight" })).toBe("weight");
-    expect(factKindOf({ type: "measurement", metric: "waist" })).toBe("weight");
-    expect(factKindOf({ type: "measurement", metric: "sprint_40yd" })).toBe("training");
-    expect(factKindOf({ type: "workout" })).toBe("training");
-    for (const type of ["work", "feeling", "symptom"] as const) expect(factKindOf({ type })).toBe("did");
-  });
-
-  it("dry-runs the count, copies every item once with its kind, and leaves the day log in place", async () => {
-    const t = harness();
-    await seedDayLog(t);
-    const dry = await t.mutation(internal.ttsMigrations.internalCopyDayLogToEvents, { dryRun: true });
-    expect(dry.totals).toMatchObject({ scanned: 6, "to-copy": 6, "already-copied": 0, refused: 0, "to-copy-meal": 1, "to-copy-weight": 1, "to-copy-training": 2, "to-copy-did": 2 });
-    const facts = async () =>
-      (await t.run((ctx) => ctx.db.query("events").collect())).filter((e) => ["meal", "weight", "training", "did"].includes(e.kind));
-    expect(await facts()).toHaveLength(0);
-
-    await t.mutation(internal.ttsMigrations.internalCopyDayLogToEvents, {});
-    const rows = await facts();
-    expect(rows.map((r) => r.kind).sort()).toEqual(["did", "did", "meal", "training", "training", "weight"]);
-    const weight = rows.find((r) => r.kind === "weight")!;
-    expect(weight).toMatchObject({ at: Date.UTC(2026, 9, 5, 12), provenance: { user: "tom" } });
-    expect(weight.data).toMatchObject({ day: "2026-10-05", metric: "weight", value: 180, unit: "lb", partOfDay: "morning", dayLogType: "measurement", quote: "weighed 180" });
-    expect(rows.find((r) => r.data.dayLogType === "symptom")!.kind).toBe("did");
-    expect(await dtsEventsOf(t, `${DAY_LOG_COPY_MIGRATION}-migrated`)).toHaveLength(1);
-
-    const again = await t.mutation(internal.ttsMigrations.internalCopyDayLogToEvents, {});
-    expect(again.totals).toMatchObject({ "to-copy": 0, "already-copied": 6 });
-    expect(await facts()).toHaveLength(6);
-    expect(await t.run((ctx) => ctx.db.query("dayLogItems").collect())).toHaveLength(6);
   });
 });

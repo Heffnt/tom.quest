@@ -29,7 +29,6 @@ export const PAGES: Page[] = [
   { slug: "jarvis", title: "Jarvis", blurb: "Todos, calendar and what waits on a ruling", priority: 9, visibility: "tom", agentReadable: true },
   { slug: "intent", title: "Intent", blurb: "His intent as an agent reads it, what each line rests on, the vocabulary, and what stands until he objects", priority: 8, visibility: "tom" },
   { slug: "history", title: "History", blurb: "Diet, training, what you told Jarvis and what Jarvis did, by day", priority: 9, visibility: "tom", agentReadable: true },
-  { slug: "log", title: "Log", blurb: "Private day entries and their recorded measures", priority: 8, visibility: "tom" },
   { slug: "forge",  title: "Forge",  blurb: "Build & train backdoors",      priority: 5, visibility: "tom" },
   { slug: "questions", title: "Questions", blurb: "One question at a time, by type, frame and topic", priority: 5, visibility: "tom" },
   { slug: "logo",   title: "Logo",   blurb: "tom.Quest brand lab",          priority: 5, visibility: "tom" },

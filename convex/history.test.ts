@@ -30,15 +30,6 @@ async function event(t: T, row: { kind: string; at: number; data?: unknown; text
   }));
 }
 
-async function dayLog(t: T, day: string, text: string, items: Array<Record<string, unknown>>) {
-  await t.run(async (ctx) => {
-    const entryId = await ctx.db.insert("dayLogEntries", { text, createdAt: at(day, 9), day, status: "applied" });
-    for (const item of items) {
-      await ctx.db.insert("dayLogItems", { entryId, day, quote: text, summary: "s", createdAt: at(day, 9), ...item } as never);
-    }
-  });
-}
-
 describe("history.page", () => {
   it("is Tom's and the read-only agent's, and refused to anyone else", async () => {
     const t = convexTest({ schema, modules });
@@ -97,10 +88,10 @@ describe("history.page", () => {
     ]);
   });
 
-  it("draws a fact's words once when the day log's entry already holds them", async () => {
+  it("draws a fact's words once when his thread message already holds them", async () => {
     const t = convexTest({ schema, modules });
-    await dayLog(t, "2026-10-01", "weighed 182 and had oatmeal", []);
-    await event(t, { kind: "meal", at: at("2026-10-01", 9), data: { day: "2026-10-01", summary: "oatmeal", quote: "had oatmeal", dayLogType: "food" } });
+    await event(t, { kind: "thread-message", at: at("2026-10-01", 8), text: "weighed 182 and had oatmeal" });
+    await event(t, { kind: "meal", at: at("2026-10-01", 9), data: { day: "2026-10-01", summary: "oatmeal", quote: "had oatmeal" } });
     const page = await (await as(t, "tom")).query(api.history.page, RANGE);
     expect(page.told.map((row) => row.text)).toEqual(["weighed 182 and had oatmeal"]);
     expect(page.meals.map((row) => row.text)).toEqual(["oatmeal"]);
@@ -123,19 +114,6 @@ describe("history.page", () => {
     expect(page).toMatchObject({ weights: [], meals: [], trainings: [] });
   });
 
-  it("leaves out the day log's rows on a day whose events hold any row of the kind, a waist or a hang test included", async () => {
-    const t = convexTest({ schema, modules });
-    await dayLog(t, "2026-10-02", "weighed 181, ran 3 miles", [
-      { type: "measurement", metric: "weight", value: 181, unit: "lb", partOfDay: "morning" },
-      { type: "workout", activity: "run", distanceMi: 3 },
-    ]);
-    await event(t, { kind: "weight", at: at("2026-10-02", 9), data: { day: "2026-10-02", summary: "waist", metric: "waist", value: 33, unit: "in" } });
-    await event(t, { kind: "training", at: at("2026-10-02", 9), data: { day: "2026-10-02", summary: "20 mm hang", metric: "hang_20mm", value: 12, unit: "s" } });
-    const page = await (await as(t, "tom")).query(api.history.page, RANGE);
-    expect(page.weights).toEqual([]);
-    expect(page.trainings).toEqual([]);
-  });
-
   it("draws an issue Tom reported as his sentence, and an agent's issue as Jarvis's", async () => {
     const t = convexTest({ schema, modules });
     await event(t, { kind: "issue", at: at("2026-10-04", 10), subject: "history-page", text: "the weight chart is empty", data: { part: "history-page", by: "tom" } });
@@ -145,23 +123,28 @@ describe("history.page", () => {
     expect(page.actions.map((row) => [row.kind, row.text])).toEqual([["issue", "the Gmail token was refused"]]);
   });
 
-  it("reads the day log for the days the events table has none of that kind, and his entries as his sentences", async () => {
+  it("draws the facts copied from the day log as the events they became", async () => {
+    // The shape the day-log copy (tom.quest pull request 374) gave the twelve
+    // day-log facts it copied on October 6, 2026: data.id "day-log-item:<id>", data.dayLogType
+    // the item's old type, at the entry's createdAt. The page reads only events.
     const t = convexTest({ schema, modules });
-    await dayLog(t, "2026-10-01", "weighed 182, ran 3 miles, oatmeal", [
-      { type: "measurement", metric: "weight", value: 182, unit: "lb", partOfDay: "morning" },
-      { type: "measurement", metric: "waist", value: 33, unit: "in", partOfDay: "morning" },
-      { type: "workout", activity: "run", distanceMi: 3, summary: "ran 3 miles" },
-      { type: "food", summary: "oatmeal" },
-    ]);
-    await dayLog(t, "2026-10-02", "weighed 181", [{ type: "measurement", metric: "weight", value: 181, unit: "lb", partOfDay: "morning" }]);
-    // The same day's weight is in events: the day log's is not drawn again.
-    await event(t, { kind: "weight", at: at("2026-10-02", 9), data: { day: "2026-10-02", summary: "weight", metric: "weight", value: 181, unit: "lb", dayLogType: "measurement" } });
+    const copied = (kind: string, day: string, hour: number, data: Record<string, unknown>) =>
+      event(t, { kind, at: at(day, hour), provenance: { user: "tom" }, data: { id: `day-log-item:${kind}-${day}`, day, ...data } });
+    await copied("weight", "2026-10-01", 7, { summary: "weight", quote: "weighed 182", dayLogType: "measurement", metric: "weight", value: 182, unit: "lb", partOfDay: "morning" });
+    await copied("training", "2026-10-01", 8, { summary: "ran 3 miles", quote: "ran 3 miles", dayLogType: "workout", activity: "run", distanceMi: 3 });
+    await copied("meal", "2026-10-01", 9, { summary: "oatmeal", quote: "oatmeal", dayLogType: "food" });
+    await copied("did", "2026-10-02", 9, { summary: "tired", quote: "felt tired all day", dayLogType: "feeling" });
 
     const page = await (await as(t, "tom")).query(api.history.page, RANGE);
-    expect(page.weights.map((w) => [w.day, w.lb])).toEqual([["2026-10-01", 182], ["2026-10-02", 181]]);
+    expect(page.weights.map((w) => [w.day, w.lb])).toEqual([["2026-10-01", 182]]);
     expect(page.trainings).toMatchObject([{ day: "2026-10-01", activity: "run", distanceMi: 3, bodyParts: [] }]);
     expect(page.meals).toMatchObject([{ day: "2026-10-01", text: "oatmeal" }]);
-    expect(page.told.map((row) => row.text)).toEqual(["weighed 182, ran 3 miles, oatmeal", "weighed 181"]);
+    expect(page.told.map((row) => [row.day, row.text])).toEqual([
+      ["2026-10-01", "weighed 182"],
+      ["2026-10-01", "ran 3 miles"],
+      ["2026-10-01", "oatmeal"],
+      ["2026-10-02", "felt tired all day"],
+    ]);
   });
 
   it("reads what Jarvis did as one line each, linked, with machine changes folded per day and failures only where they opened", async () => {

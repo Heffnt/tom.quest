@@ -127,36 +127,26 @@ describe("POST /tts/capture: needing Tom today", () => {
   });
 });
 
-// ── POST /jarvis/day-log writes a pending entry behind the worker key ───────
-describe("POST /jarvis/day-log", () => {
+// ── The day log's routes are gone ────────────────────────────────────────────
+// The day log was removed (design of October 6, 2026, section 13.2); his facts
+// are events rows written through POST /jarvis/event.
+describe("the day log's routes", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
   });
 
-  async function postDayLog(t: ReturnType<typeof convexTest>, body: Record<string, unknown>, key?: string) {
-    return await t.fetch("/jarvis/day-log", {
-      method: "POST",
-      headers: {
-        "X-Jarvis-Key": key ?? "s3cret",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(body),
-    });
-  }
-
-  it("writes a pending entry with the worker key, and refuses without it", async () => {
+  it("are not served under /jarvis/ or /tts/", async () => {
     vi.stubEnv("JARVIS_KEY", "s3cret");
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const t = convexTest(schema, modules);
-
-    const refused = await postDayLog(t, { text: "a fact", threadMessageId: "evt_day_1" }, "wrong");
-    expect(refused.status).toBe(401);
-
-    const ok = await postDayLog(t, { text: "a fact", threadMessageId: "evt_day_1" });
-    expect(ok.status).toBe(200);
-    const body = await ok.json();
-    expect(body).toMatchObject({ ok: true });
-    const entry = await t.run((ctx) => ctx.db.get(body.id as never));
-    expect(entry).toMatchObject({ text: "a fact", status: "pending", threadMessageId: "evt_day_1" });
+    for (const path of ["/jarvis/day-log", "/tts/day-log/pending", "/tts/day-log/apply", "/jarvis/day-log/pending", "/jarvis/day-log/apply"]) {
+      const res = await t.fetch(path, {
+        method: "POST",
+        headers: { "X-Jarvis-Key": "s3cret", "X-TTS-Key": "s3cret", "Content-Type": "application/json" },
+        body: JSON.stringify({ text: "a fact", threadMessageId: "evt_day_1" }),
+      });
+      expect(res.status, path).toBe(404);
+    }
   });
 });
 
