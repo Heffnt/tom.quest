@@ -33,8 +33,9 @@
 // HOW IT IS RUN, after deploy and once the export is newer than the tables'
 // last write: a dry run, which counts each table's rows and deletes nothing,
 // then real runs until a dry run counts zero everywhere. Each call takes up to
-// `pageSize` rows (default 1000) of each table in one transaction; a table
-// holding more is named in `more`, and the same call again takes the next.
+// `pageSize` rows in all (default and most 1000), table by table, in one
+// transaction; a table with rows left is named in `more`, and the same call
+// again takes the next.
 //   npx convex run ttsMigrationsSweep:internalPurgeSweptTables '{"dryRun":true}'
 //   npx convex run ttsMigrationsSweep:internalPurgeSweptTables '{}'
 // `tables` limits a call to some of the list.
