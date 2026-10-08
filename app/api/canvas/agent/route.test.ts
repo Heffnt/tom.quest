@@ -32,10 +32,13 @@ vi.mock("convex/browser", () => ({
 
 vi.mock("@/app/canvas/lib/canvas-agent", () => ({ runCanvasAgent }));
 
-const account = (role: "user" | "admin" | "tom") => ({
-  _id: `${role}-id`, name: role, email: null, role,
-  isAdmin: role === "admin" || role === "tom", isTom: role === "tom", isAgent: false,
-});
+// The viewer query's answer for each role, as convex/users.ts viewer returns it.
+const ACCOUNTS = {
+  user: { _id: "user-id", name: "user", email: null, role: "user", isAdmin: false, isTom: false, isAgent: false },
+  admin: { _id: "admin-id", name: "admin", email: null, role: "admin", isAdmin: true, isTom: false, isAgent: false },
+  tom: { _id: "tom-id", name: "tom", email: null, role: "tom", isAdmin: true, isTom: true, isAgent: false },
+} as const;
+const account = (role: keyof typeof ACCOUNTS) => ACCOUNTS[role];
 
 function post(headers: Record<string, string> = { Authorization: "Bearer access-token" }): NextRequest {
   return new NextRequest("http://localhost/api/canvas/agent", {
