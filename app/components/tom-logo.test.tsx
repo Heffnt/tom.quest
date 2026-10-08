@@ -87,19 +87,26 @@ describe("TomLogo measurement when a font fails to load", () => {
     delete (document as { fonts?: unknown }).fonts;
   });
 
-  it("measures the letters anyway and lays the wordmark out from the measured widths", async () => {
+  it("measures the letters once both the failed load and `ready` have settled, and lays the wordmark out from the measured widths", async () => {
+    let fontsReady: () => void = () => {};
+    const ready = new Promise<void>((resolve) => { fontsReady = resolve; });
     Object.defineProperty(document, "fonts", {
       configurable: true,
-      value: { load: () => Promise.reject(new Error("local(\"Arial\") failed to load")), ready: Promise.resolve() },
+      value: { load: () => Promise.reject(new Error("local(\"Arial\") failed to load")), ready },
     });
     vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
       return { width: WIDTHS[this.textContent ?? ""] ?? 0 } as DOMRect;
     });
     const { container } = render(<TomLogo fontSize={FONT_SIZE} variant="plain" />);
     const xOf = (word: string) => Number(Array.from(container.querySelectorAll("text")).filter((el) => el.textContent === word).map((el) => el.getAttribute("x"))[0]);
-    const lastTX = () => Math.max(...Array.from(container.querySelectorAll("text")).filter((el) => el.textContent === "t").map((el) => Number(el.getAttribute("x"))));
-    // The estimate is 1.453 em for "ues"; the measured width is 160.
-    await waitFor(() => expect(lastTX() - xOf("ues")).toBeCloseTo(WIDTHS.ues, 6));
-    expect(xOf("om") - Math.min(...Array.from(container.querySelectorAll("text")).filter((el) => el.textContent === "t").map((el) => Number(el.getAttribute("x"))))).toBeCloseTo(WIDTHS.t, 6);
+    const tXs = () => Array.from(container.querySelectorAll("text")).filter((el) => el.textContent === "t").map((el) => Number(el.getAttribute("x")));
+    // The load has failed, `ready` has not settled: the widths are still the
+    // estimate (1.453 em for "ues").
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(Math.max(...tXs()) - xOf("ues")).toBeCloseTo(1.453 * FONT_SIZE, 6);
+    fontsReady();
+    // The measured width of "ues" is 160, of "t" 70.
+    await waitFor(() => expect(Math.max(...tXs()) - xOf("ues")).toBeCloseTo(WIDTHS.ues, 6));
+    expect(xOf("om") - Math.min(...tXs())).toBeCloseTo(WIDTHS.t, 6);
   });
 });

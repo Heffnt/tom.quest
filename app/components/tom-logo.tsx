@@ -58,15 +58,22 @@ function fontReady(fontSize: number): Promise<unknown> {
   if (typeof document === "undefined" || !document.fonts) {
     return Promise.resolve();
   }
-  // A face that fails to load rejects the load: Manrope's own, or a fallback
-  // in MANROPE_FAMILY such as local("Arial") where the system has none. The
-  // measurement runs anyway, on whatever face the browser drew with; without
-  // this catch it never ran, the letters kept the estimated widths, and on a
-  // face wider than Manrope the wordmark's letters overlapped.
-  return Promise.all([
+  // Both are waited for, and either may fail. A face that fails to load
+  // rejects the load: Manrope's own, or a fallback in MANROPE_FAMILY such as
+  // local("Arial") where the system has none. The measurement then runs
+  // anyway, once `ready` has also settled, on whatever face the browser drew
+  // with. With Promise.all and no catch it never ran, the letters kept the
+  // estimated widths, and on a face wider than Manrope the wordmark's letters
+  // overlapped; Promise.all with a catch would measure as soon as the load
+  // failed, before `ready`, and a later swap of faces would leave stale widths.
+  // The explicit load is kept because `ready` waits only for loads already
+  // pending: the probes are hidden spans this effect has just mounted, so
+  // Manrope at this size may not have been asked for yet, and `ready` alone
+  // could settle before it is.
+  return Promise.allSettled([
     document.fonts.load(`${FONT_WEIGHT} ${fontSize}px ${MANROPE_FAMILY}`),
     document.fonts.ready,
-  ]).catch(() => undefined);
+  ]);
 }
 
 export default function TomLogo({
