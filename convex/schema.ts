@@ -751,7 +751,7 @@ export default defineSchema({
     archivedAt: v.optional(v.number()),
     // The row's _id in dtsTodos before the rename (convex/jarvis/tables.ts
     // copies it here), so an id cited in the evidence or a box file
-    // a box file still finds its row. Absent on rows written after it.
+    // still finds its row. Absent on rows written after it.
     legacyId: v.optional(v.string()),
     // The dual write's stamp: the version of the old row this copy was last
     // written from (convex/jarvis/tables.ts, `follow`); it must match it.
