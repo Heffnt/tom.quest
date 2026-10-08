@@ -982,10 +982,6 @@ export const internalRecordAudit = internalMutation({
     // failed attempt stays in the event log (mergeGateFor reads the newest row
     // for the key), so the record still says the audit was unreachable first.
     const verdict = args.verdict.toUpperCase();
-    if (existing && verdict === AUDIT_UNAVAILABLE) {
-      // A second "could not run" adds nothing but a row.
-      return { existing: true, verdict: typeof recorded === "string" ? recorded : null };
-    }
     const text = capUtf8(redactSecrets(args.text), AUDIT_TEXT_MAX_BYTES);
     // The findings are read OUT OF THE TEXT THE ROW KEEPS, after the redaction
     // and the cap, so they cannot say anything the stored text does not and
@@ -1014,6 +1010,26 @@ export const internalRecordAudit = internalMutation({
                   reason: redactSecrets(args.trace.reason).slice(0, AUDIT_REMOVAL_NOTE_MAX_CHARS),
                 }),
           };
+    // A LATER "COULD NOT RUN" REPLACES THE EARLIER ONE'S TEXT, in the same
+    // row: the row says why the newest attempt failed, and a head retried for
+    // days does not stack a row per attempt. Until 2026-10-08 the first
+    // UNAVAILABLE row was kept and every later one dropped, so after the
+    // audit's fallback was fixed the reason a later audit still failed was in
+    // no place anyone could read. A real verdict still lands as a new row
+    // (above), leaving the failed attempt in the log.
+    if (existing && verdict === AUDIT_UNAVAILABLE) {
+      await ctx.db.patch(existing._id, {
+        data: {
+          ...args,
+          verdict,
+          text,
+          removalNotes,
+          ...(traceFindings === undefined ? {} : { traceFindings }),
+          ...(trace === undefined ? {} : { trace }),
+        },
+      });
+      return { existing: true, verdict, replaced: true };
+    }
     // AN ABSENT FIELD WRITES NO KEY. `...args` already leaves out what was never
     // sent, and the two conditional spreads put back only what was — so a row
     // with no `chunks` stays a pre-chunking audit rather than becoming one that
