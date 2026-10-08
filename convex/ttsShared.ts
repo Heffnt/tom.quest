@@ -17,7 +17,6 @@ import {
   DAY_START_HOUR,
   addDays,
   newYorkDay,
-  newYorkHhmm,
   newYorkInstant,
   newYorkOffsetHours,
   newYorkParts,
@@ -324,11 +323,6 @@ export function countdownText(dueAt: number, now: number): string {
   return `${-dayDiff} days overdue`;
 }
 
-/**
- * New York wall-clock "HH:MM", 24-hour, of an instant: for the record's own
- * arithmetic (convex/jarvis/tick.ts). Text Tom reads uses displayTime.
- */
-export const nyHhmm = newYorkHhmm;
 
 // ── Readiness: two values (ruling 18, the lifeos update, 2026-09-05) ────────
 // THE ONE HOME for what the readiness field means. Tom, 2026-08-27: "theres no
