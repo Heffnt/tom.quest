@@ -21,15 +21,23 @@ afterEach(() => {
 });
 
 describe("GET /jarvis/context", () => {
-  it("exposes the kept ask reader", async () => {
+  it("exposes the delegate's two readers", async () => {
     const t = convexTest({ schema, modules });
     vi.stubEnv("JARVIS_KEY", "k");
     expect((await t.fetch("/jarvis/context?for=ask&job=delegate", { headers: KEY })).status).toBe(200);
     const unknown = await t.fetch("/jarvis/context?for=nope", { headers: KEY });
     expect(unknown.status).toBe(400);
-    expect((await unknown.json()).error).toBe("for must be one of ask");
+    expect((await unknown.json()).error).toBe("for must be one of planner, ask");
     expect((await t.fetch("/jarvis/context?for=learning", { headers: KEY })).status).toBe(400);
     expect((await t.fetch("/tts/learning-input", { headers: { "X-TTS-Key": "k" } })).status).toBe(404);
+  });
+
+  it("answers the delegate's view with the missing-layer sentence when no model-of-tom is stored", async () => {
+    const t = convexTest({ schema, modules });
+    vi.stubEnv("JARVIS_KEY", "k");
+    const response = await t.fetch("/jarvis/context?for=planner", { headers: KEY });
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({ error: "model-of-tom layer operate is not stored" });
   });
 
   it("does not register retired planner and learning aliases", async () => {
@@ -53,7 +61,7 @@ describe("GET /jarvis/context", () => {
     ] as const) {
       expect((await t.fetch(path, { method, headers: { "X-TTS-Key": "k" } })).status).toBe(404);
     }
-    for (const name of ["planner", "work-queue", "learning", "simplify"]) {
+    for (const name of ["work-queue", "learning", "simplify"]) {
       expect((await t.fetch(`/jarvis/context?for=${name}`, { headers: KEY })).status).toBe(400);
     }
   });

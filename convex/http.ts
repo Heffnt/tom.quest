@@ -1,6 +1,5 @@
 import { httpRouter } from "convex/server";
 import { register as registerJarvisRoutes } from "./jarvis/routes";
-import { serveContext } from "./jarvis/context";
 import { jarvisAuth, presentsJarvisKey } from "./jarvis/auth";
 import { postRuling } from "./jarvis/rulings";
 import { httpAction } from "./_generated/server";
@@ -1497,8 +1496,8 @@ const ttsSearchEvals = httpAction(async (ctx, request) => {
 http.route({ path: "/tts/search/evals", method: "GET", handler: ttsSearchEvals });
 
 // POST /tts/event — one dtsEvents row from the worker. Body: { kind, data? }.
-// The job records a failed step ("nightly-failure"), its learning run
-// ("learning-run") and its summary ("nightly-run") this way, which is what
+// The job records a failed step ("nightly-failure") and its summary
+// ("nightly-run") this way, which is what
 // the digest reads for "job failures" and "what the nightly job wrote". Before
 // each push of WikiTom's main it also posts a "nightly-run" row keyed
 // `WikiTom@<sha>` for each commit it is about to push, which opens the merge
