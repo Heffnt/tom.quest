@@ -66,16 +66,9 @@ describe("the direct write: each writer writes the plain row and no old row", ()
     await plainOnly(t);
   });
 
-  it("updateTodo", async () => {
-    const { t, tom, id } = await setup();
-    await tom.mutation(api.tts.updateTodo, { id, body: "the landlord's terms" });
-    expect(await plainOf(t, "todos", id)).toMatchObject({ body: "the landlord's terms" });
-    await plainOnly(t);
-  });
-
-  it("setStatus (applyStatusChange, and its Tom touch)", async () => {
-    const { t, tom, id } = await setup();
-    await tom.mutation(api.tts.setStatus, { id, status: "done" });
+  it("internalTriage applies a status change and its Tom touch", async () => {
+    const { t, id } = await setup();
+    await t.mutation(internal.tts.internalTriage, { id, status: "done" });
     expect(await plainOf(t, "todos", id)).toMatchObject({ status: "done", tomTouchedAt: expect.any(Number) });
     await plainOnly(t);
   });
@@ -206,7 +199,9 @@ describe("the direct write: each writer writes the plain row and no old row", ()
       t.run(async (ctx) => await ctx.db.query("dtsTodos").collect());
     const frozen = await oldTables();
     await tom.mutation(api.tts.createTodo, { statement: "sign it", dueAt: Date.now() + 2 * DAY_MS });
-    await tom.mutation(api.tts.updateTodo, { id: before.todo.old, statement: "the old todo, edited" });
+    await t.mutation(internal.tts.internalBulkUpdate, {
+      updates: [{ id: before.todo.old, category: "home" }],
+    });
     await tom.mutation(api.ttsRulings.recordRuling, { todoId: id, verdict: "archive" });
     // Nothing wrote an old row.
     expect(await oldTables()).toEqual(frozen);

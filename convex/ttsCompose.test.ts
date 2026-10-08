@@ -30,7 +30,7 @@ import {
   type SpendFact,
   type TodayFacts,
 } from "./ttsCompose";
-import { ttsItemLink, ttsSessionLink, ttsTabLink } from "./ttsShared";
+import { ttsItemLink, ttsSessionLink } from "./ttsShared";
 
 // The composer is PURE and imports nothing (its header says why), so every
 // test here calls it with literals — no Convex harness, no clock, no network.
@@ -43,7 +43,6 @@ describe("the links the composer spells for itself", () => {
   it("are byte-identical to convex/ttsShared.ts's", () => {
     expect(itemUrl("ph7fqh2j")).toBe(ttsItemLink("ph7fqh2j"));
     expect(sessionUrl("k97a")).toBe(ttsSessionLink("k97a"));
-    expect(TAB_EVERYTHING).toBe(ttsTabLink("everything"));
   });
 });
 

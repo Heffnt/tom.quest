@@ -41,10 +41,14 @@ const nextConfig: NextConfig = {
     // browser that followed it holds a redirect that is stale at once and asks
     // the server again on the next visit, which now serves the page.
     // "tts" -> "jarvis" (2026-09-26, TTS dissolved into Jarvis): every
-    // ?item=, ?tab= and ?intent= link already sent to Slack names /tts.
+    // ?item=, ?tab= and ?intent= link already sent to Slack names /tts. The
+    // removed /jarvis page then sends it on to /sessions; query strings pass
+    // through both redirects. The redirect is temporary so an old address
+    // does not become a permanently cached destination.
     return [
       { source: "/" + "dts", destination: "/jarvis", permanent: true },
       { source: "/tts", destination: "/jarvis", permanent: true },
+      { source: "/jarvis", destination: "/sessions", permanent: false },
       ...["/agents", "/runs/:path*", "/observe", "/thread", "/mock/dump"].flatMap((source) => [
         {
           source,

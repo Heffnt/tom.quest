@@ -7,16 +7,15 @@ import {
 } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
-import { requireTom, requireTomOrAgent } from "./authRoles";
+import { requireTom } from "./authRoles";
 import {
-  READINESS,
   goalCheckable,
   nyCalendarDayKey,
   nyOffsetHours,
 } from "./ttsShared";
 import { redactSecrets } from "../shared/redact.mjs";
 import { ZONE } from "../shared/clock.mjs";
-import { eitherId, resolveId, withPlainTodoIds } from "./jarvis/tables";
+import { eitherId, resolveId } from "./jarvis/tables";
 
 // TTS (Delegated Todo System) — life-todo store, instrumentation and daily queue.
 // Spec: WikiTom tts/spec.md. Everything Tom-facing is
@@ -28,19 +27,8 @@ async function requireTomId(ctx: QueryCtx | MutationCtx): Promise<Id<"users">> {
   return await requireTom(ctx, "TTS");
 }
 
-// The READ gate: Tom, plus the `agent` role a TTS session browses as, because
-// "TTS" is an agent-readable surface (convex/agentSurfaces.ts). Only query
-// handlers the /tts page renders from call this — a reader that can also
-// write is the thing this split exists to prevent.
-async function requireTomOrAgentId(
-  ctx: QueryCtx | MutationCtx,
-): Promise<Id<"users">> {
-  return await requireTomOrAgent(ctx, "TTS");
-}
-
-// Readiness is two values (ruling 18); READINESS, the two-value validator, is
-// imported from ttsShared — Tom's door writes only those. The worker's pen
-// below still ACCEPTS the retired spellings and stores them normalized.
+// The worker's pen below still ACCEPTS retired readiness spellings and stores
+// them normalized.
 const STATUS = v.union(
   v.literal("active"),
   v.literal("waiting"),
@@ -85,26 +73,8 @@ export async function logEvent(
 export const listTodos = query({
   args: {},
   handler: async (ctx) => {
-    await requireTomOrAgentId(ctx);
+    await requireTomId(ctx);
     return await ctx.db.query("todos").collect();
-  },
-});
-
-// Focus: today's queue row (entries joined with their todos) — null when no
-// prep has happened yet today.
-export const listRecentEvents = query({
-  args: { limit: v.optional(v.number()) },
-  handler: async (ctx, { limit }) => {
-    await requireTomOrAgentId(ctx);
-    // The rows store the old todo id; the page joins them to plain rows.
-    return await withPlainTodoIds(
-      ctx,
-      await ctx.db
-        .query("dtsEvents")
-        .withIndex("by_at")
-        .order("desc")
-        .take(Math.min(limit ?? 200, 1000)),
-    );
   },
 });
 
@@ -147,72 +117,6 @@ export const createTodo = mutation({
   },
 });
 
-// Generic field edit. Only fields present in args change; updatedAt always
-// bumps. Status transitions go through setStatus (they carry side effects).
-export const updateTodo = mutation({
-  args: {
-    id: eitherId.todos,
-    statement: v.optional(v.string()),
-    body: v.optional(v.string()),
-    readiness: v.optional(READINESS),
-    timingClass: v.optional(TIMING_CLASS),
-    dueAt: v.optional(v.union(v.number(), v.null())),
-    dateKind: v.optional(DATE_KIND),
-    condition: v.optional(v.string()),
-    wakeAt: v.optional(v.union(v.number(), v.null())),
-    unarchiveCondition: v.optional(v.string()),
-    workDescription: v.optional(v.string()),
-    entryAction: v.optional(v.string()),
-    brief: v.optional(v.string()),
-    category: v.optional(v.union(v.string(), v.null())),
-    // Tom's line on a GOAL (schema: mustNotBreak); null clears it. This door
-    // is the only writer — ruling 13.
-    mustNotBreak: v.optional(v.union(v.string(), v.null())),
-  },
-  handler: async (ctx, { id: given, ...fields }) => {
-    await requireTomId(ctx);
-    const id = await resolveId(ctx, "todos", given);
-    const todo = id === null ? null : await ctx.db.get(id);
-    if (id === null || !todo) throw new Error("TTS todo not found");
-    if (fields.mustNotBreak !== undefined && todo.kind !== "goal") {
-      throw new Error(
-        "mustNotBreak is a goal's field — this todo is not a goal",
-      );
-    }
-    // Kept-dates rule (spec §8): a date never just disappears — the silent
-    // slide is the one forbidden outcome. Clearing dueAt directly is refused;
-    // dates leave via recordDateOutcome (done / renegotiated / missed).
-    if (fields.dueAt === null && todo.dueAt !== undefined) {
-      throw new Error(
-        "A date is never cleared silently — resolve it via recordDateOutcome (renegotiated before the date, or missed)",
-      );
-    }
-    const now = Date.now();
-    // Every updateTodo edit is a Tom touch — tomTouchedAt marks the row FROZEN:
-    // no agent pen rewrites it or closes it behind him.
-    const patch: Record<string, unknown> = { updatedAt: now, tomTouchedAt: now };
-    for (const [key, value] of Object.entries(fields)) {
-      if (value === undefined) continue;
-      patch[key] = value === null ? undefined : value;
-    }
-    if (patch.dueAt !== undefined) Object.assign(patch, DATE_MOVED);
-    // Setting a due date on a whenever item promotes it to dated (spec §5.2);
-    // an explicit timingClass in the same call wins.
-    if (
-      patch.dueAt !== undefined &&
-      fields.timingClass === undefined &&
-      todo.timingClass === "whenever"
-    ) {
-      patch.timingClass = "dated";
-      if (patch.dateKind === undefined && todo.dateKind === undefined) {
-        patch.dateKind = "self-imposed";
-      }
-    }
-    await ctx.db.patch(id, patch);
-    await logEvent(ctx, "updated", id, { fields: Object.keys(fields) });
-  },
-});
-
 /** What a write that changes a todo's dueAt also writes: the rollover's mark
  *  for the old date no longer holds (schema todos.rolledOverDueAt), so the
  *  5 a.m. rollover reads the row again once its new date passes. Every write
@@ -220,7 +124,7 @@ export const updateTodo = mutation({
 export const DATE_MOVED = { rolledOverDueAt: undefined } as const;
 
 // The ONE place an open date resolves as kept when an item completes — called
-// by setStatus(done) and recordDateOutcome(done) so the kept-dates side
+// by internalTriage(done) and recordDateOutcome(done) so the kept-dates side
 // effects cannot drift between the two paths (review finding).
 function resolveDateAsDone(
   todo: Doc<"todos">,
@@ -241,8 +145,8 @@ function resolveDateAsDone(
 }
 
 // The ONE implementation of a status transition (spec §5.1) — used by the
-// Tom-gated setStatus below, by internalTriage (live sessions applying
-// Tom's spoken rulings via `npx convex run`), and by ttsRulings.recordRuling
+// internalTriage (live sessions applying Tom's spoken rulings via `npx convex
+// run`), and by ttsRulings.recordRuling
 // (the archive verdict). Nothing is ever deleted: "archived" and "done" are
 // the only terminal states, both kept and visible.
 export async function applyStatusChange(
@@ -288,34 +192,12 @@ export async function applyStatusChange(
   });
 }
 
-export const setStatus = mutation({
-  args: {
-    id: eitherId.todos,
-    status: STATUS,
-    wakeAt: v.optional(v.number()),
-    unarchiveCondition: v.optional(v.string()),
-    note: v.optional(v.string()),
-  },
-  handler: async (ctx, { id: given, ...args }) => {
-    await requireTomId(ctx);
-    const id = await resolveId(ctx, "todos", given);
-    const todo = id === null ? null : await ctx.db.get(id);
-    if (id === null || !todo) throw new Error("TTS todo not found");
-    await applyStatusChange(ctx, todo, args);
-    // Stamped HERE, not in applyStatusChange: agent-driven writes go through
-    // that same transition (the worker pen's completion closes a row with it),
-    // and an agent action must not stamp a Tom touch (tomTouchedAt freezes the
-    // row to every agent pen).
-    await ctx.db.patch(id, { tomTouchedAt: Date.now() });
-  },
-});
-
 // Triage from a LIVE session with Tom (the Friday session, or any interactive
 // session where he rules out loud and the session agent records it): an
 // internal mutation so the agent can apply rulings via `npx convex run
 // tts:internalTriage` with the deploy credentials Tom's machine holds. Only
 // ever run while Tom is present and ruling — it is his pen, not a policy
-// actor. Same status semantics as setStatus (one implementation), plus an
+// actor. It uses the shared status-transition implementation, plus an
 // optional self-imposed date for undated items (dated items keep the
 // kept-dates rule: dates move only via recordDateOutcome).
 export const internalTriage = internalMutation({
@@ -530,22 +412,6 @@ export function nowContext(utcMs: number) {
     timezone: ZONE,
   };
 }
-
-// Instrumentation hook for the surfaces (spec §10): Focus/Inventory record
-// engagement, queue cycling, session starts, etc. Kind is free-form by
-// convention; the analysis layer is a later TTS todo.
-export const recordEvent = mutation({
-  args: {
-    kind: v.string(),
-    todoId: v.optional(eitherId.todos),
-    data: v.optional(v.any()),
-  },
-  handler: async (ctx, { kind, todoId, data }) => {
-    await requireTomId(ctx);
-    const plain = todoId === undefined ? undefined : await resolveId(ctx, "todos", todoId);
-    await logEvent(ctx, kind, plain ?? undefined, data);
-  },
-});
 
 // ── Internal: worker submissions (via key-authed http.ts routes) ─────────────
 

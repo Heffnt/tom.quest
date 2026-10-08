@@ -1,16 +1,8 @@
 import { redirect } from "next/navigation";
 
-// The Focus surface merged into /jarvis. Any ?item=&intent= deep link is
-// carried across.
-export default async function FocusPage({
-  searchParams,
-}: {
-  searchParams: Promise<Record<string, string | string[] | undefined>>;
-}) {
-  const sp = await searchParams;
-  const qs = new URLSearchParams();
-  if (typeof sp.item === "string") qs.set("item", sp.item);
-  if (typeof sp.intent === "string") qs.set("intent", sp.intent);
-  const query = qs.toString();
-  redirect(query === "" ? "/jarvis" : `/jarvis?${query}`);
+// The Focus surface now lands on sessions. Its old todo deep links (?item=, ?intent=)
+// are not carried: no page shows a single todo since the /jarvis page went,
+// so the sessions page has nothing to open with them.
+export default function FocusPage() {
+  redirect("/sessions");
 }

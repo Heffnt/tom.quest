@@ -456,8 +456,8 @@ export function rulingAnswers(ruling: { ruledAt: number }, todo: { updatedAt: nu
 
 /**
  * READY FOR TOM (ruling 18): prepared, active, wakeAt absent or passed, every
- * need done. The one computation behind the page's ready filter, the needs-me
- * list, the digest's "ready for him" section, and the session-kind choice. A
+ * need done. The one computation behind the digest's "ready for him" section
+ * and the work queue. A
  * raw capture (unprepared) is never ready, whatever else is true of it.
  */
 export function isReadyForTom(
@@ -466,96 +466,6 @@ export function isReadyForTom(
   now: number,
 ): boolean {
   return isPrepared(todo.readiness) && isReady(todo, doneSet, now);
-}
-
-// ── Waiting, computed with its reason (the lifeos update, phase 7) ──────────
-// "Waiting" is no longer a stored status: it is what an active todo that is
-// not ready is doing, and the reason is computed here — ONE function, so the
-// page's waiting line, the batch card's blocked rows, and the digest cannot
-// name different reasons for the same row. The stored status "waiting" is
-// still readable during the widen and reads as a sleep (its wakeAt, or its
-// wake condition in words when it has no time).
-//
-// The reasons, in the order they are checked — hard blocks first, then what
-// an agent clears on its own, then Tom:
-//   wake        — asleep: a stored "waiting" row, or an active row whose
-//                 wakeAt is still ahead.
-//   need        — an unmet need, named (the first in the todo's `needs` that
-//                 is not done).
-//   credential  — the todo comes from a source whose credential Tom has
-//                 declined (a declined integration is an archived todo with
-//                 his ruling on it; the caller passes that set), so nothing
-//                 can move it until the credential exists.
-//   unprepared  — a raw capture; the preparer job clears this on its own.
-//   tom         — prepared, and the actor is Tom: it waits on him. Also the
-//                 answer for a prepared todo with no actor field (a legacy
-//                 standalone todo, which Tom executes).
-//   null        — an agent task that is ready: waiting on nothing but a
-//                 worker's tick.
-export type WaitingReason =
-  | { kind: "wake"; at?: number; condition?: string }
-  | { kind: "need"; id: string; statement?: string }
-  | { kind: "credential"; source: string }
-  | { kind: "unprepared" }
-  | { kind: "tom" };
-
-/** The slice of a todo the waiting rule reads. */
-export type WaitingTodo = ReadyTodo & {
-  actor?: "tom" | "agent";
-  source?: string;
-};
-
-export type WaitingContext = {
-  now: number;
-  doneSet: ReadonlySet<string>;
-  /** The display text of a need, by id — so the reason names it. */
-  statementOf?: (id: string) => string | undefined;
-  /** Source names whose credential Tom declined (empty until phase 6 feeds
-   * it from the archived integration todos). */
-  declinedSources?: ReadonlySet<string>;
-};
-
-export function waitingReason(
-  todo: WaitingTodo,
-  ctx: WaitingContext,
-): WaitingReason | null {
-  if (todo.status !== "active" && todo.status !== "waiting") return null;
-  if (todo.status === "waiting" || !wakeAtPassed(todo, ctx.now)) {
-    return { kind: "wake", at: todo.wakeAt };
-  }
-  const unmet = (todo.needs ?? []).find((id) => !ctx.doneSet.has(id));
-  if (unmet !== undefined) {
-    return { kind: "need", id: unmet, statement: ctx.statementOf?.(unmet) };
-  }
-  if (todo.source !== undefined && ctx.declinedSources?.has(todo.source)) {
-    return { kind: "credential", source: todo.source };
-  }
-  if (!isPrepared(todo.readiness)) return { kind: "unprepared" };
-  if (todo.actor !== "agent") return { kind: "tom" };
-  return null;
-}
-
-/** The one spelling of a reason on a page or in a message. `date` renders an
- * instant the way the surface does (the page's fmtDate, the digest's day). */
-export function waitingReasonText(
-  reason: WaitingReason,
-  date: (at: number) => string,
-): string {
-  switch (reason.kind) {
-    case "wake":
-      if (reason.at !== undefined) {
-        return `waiting until ${date(reason.at)}${reason.condition ? ` — ${reason.condition}` : ""}`;
-      }
-      return reason.condition ? `waiting until: ${reason.condition}` : "waiting";
-    case "need":
-      return `waiting on: ${reason.statement ?? reason.id}`;
-    case "credential":
-      return `waiting on a credential: ${reason.source} declined`;
-    case "unprepared":
-      return "waiting: unprepared";
-    case "tom":
-      return "waiting on you";
-  }
 }
 
 /** The slice of a todo the goal-condition rule reads. */
@@ -771,14 +681,10 @@ export function isLive(status: string): boolean {
   return (LIVE_STATUSES as readonly string[]).includes(status);
 }
 
-/** Deep link to one item on the /tts page (Everything tab), optionally
- * carrying an intent the page confirms before acting (state changes only on
- * the confirmed click — Slack's link-preview crawler fetches URLs, spec §7).
- * The single producer of the ?item=&intent= vocabulary consumed by app/jarvis.
- * Old /inventory links redirect to /tts with params preserved. */
-export type TtsLinkIntent = "done" | "archive" | "engage";
-export function ttsItemLink(todoId: string, intent?: TtsLinkIntent): string {
-  return `https://tom.quest/tts?item=${todoId}${intent ? `&intent=${intent}` : ""}`;
+/** Deep link to a todo's former TTS address. Existing and newly posted digest
+ * links pass through the compatibility redirects to /sessions. */
+export function ttsItemLink(todoId: string): string {
+  return `https://tom.quest/tts?item=${todoId}`;
 }
 
 // composeCaptured remains in convex/ttsCompose.ts for the output-channel case
@@ -868,17 +774,6 @@ export function outputChannel(): string | null {
   }
   console.error("slack: SLACK_TTS_TODAY_CHANNEL_ID not configured — nothing posted to the output channel");
   return null;
-}
-
-/** A tab of the /tts page that a Slack message may link, in the page's own
- * `?tab=` vocabulary (app/jarvis/jarvis-client.tsx): everything, its one tab.
- * The one spelling of a tab link, for every Slack message that sends Tom to
- * the page for the rest of a list. The retired spellings older posts carry
- * (calendar, batches, needs-me, by-individual) open the everything tab: the
- * page reads any name as everything. */
-type TtsTab = "everything";
-export function ttsTabLink(tab: TtsTab): string {
-  return `https://tom.quest/tts?tab=${tab}`;
 }
 
 export const VOCABULARY_COUNTS = v.object({

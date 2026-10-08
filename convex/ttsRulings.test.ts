@@ -108,11 +108,10 @@ describe("TTS unified rulings", () => {
       ctx.db.insert("rulings", { subjectType: "code", repo: "tom.quest", ruledAt: Date.now() + (seeded += 1), ...row }),
     );
 
-  // witness: remove the requireTom call from listRulings or recordRuling in
+  // witness: remove the requireTom call from recordRuling in
   // convex/ttsRulings.ts
-  it("gates every Tom-facing function on the tom role", async () => {
+  it("gates the ruling pen on the tom role", async () => {
     const t = testDb();
-    await expect(t.query(api.ttsRulings.listRulings, {})).rejects.toThrow();
     await expect(
       t.mutation(api.ttsRulings.recordRuling, {
         repo: "r",
@@ -124,7 +123,6 @@ describe("TTS unified rulings", () => {
       ctx.db.insert("users", { name: "u", email: "u@tom.quest", role: "user" }),
     );
     const user = t.withIdentity({ subject: userId });
-    await expect(user.query(api.ttsRulings.listRulings, {})).rejects.toThrow();
     await expect(
       user.mutation(api.ttsRulings.recordRuling, {
         repo: "r",
@@ -193,7 +191,7 @@ describe("TTS unified rulings", () => {
     const todoId = await tom.mutation(api.tts.createTodo, {
       statement: "email Ana Maria",
     });
-    await tom.mutation(api.tts.updateTodo, {
+    await t.mutation(internal.tts.internalPrepareTodo, {
       id: todoId,
       readiness: "prepared",
     });
@@ -204,11 +202,11 @@ describe("TTS unified rulings", () => {
     });
     const [todo] = await tom.query(api.tts.listTodos, {});
     expect(todo.readiness).toBe("unprepared");
-    const [ruling] = await tom.query(api.ttsRulings.listRulings, {});
+    const [ruling] = await tom.query(internal.ttsRulings.internalRecentRulings, { limit: 1000 });
     expect(ruling.subjectType).toBe("life");
     expect(ruling.sentence).toBe("ask about the Friday slot instead"); // trimmed
     expect(ruling.appliedAt).toBeUndefined(); // the preparer consumes it
-    const events = await tom.query(api.tts.listRecentEvents, {});
+    const events = await t.run((ctx) => ctx.db.query("dtsEvents").collect());
     const plainTodo = await plainId(t, todoId);
     expect(
       events.some((e) => e.kind === "ruling" && e.todoId === plainTodo),
@@ -232,7 +230,7 @@ describe("TTS unified rulings", () => {
     expect(todo.status).toBe("archived");
     expect(todo.archivedAt).toBeDefined();
     expect(todo.unarchiveCondition).toBe("when the renewal window reopens");
-    const [ruling] = await tom.query(api.ttsRulings.listRulings, {});
+    const [ruling] = await tom.query(internal.ttsRulings.internalRecentRulings, { limit: 1000 });
     expect(ruling.appliedAt).toBeDefined();
     expect(ruling.applyResult).toBe("status archived");
   });
@@ -251,7 +249,7 @@ describe("TTS unified rulings", () => {
     await expect(
       t.mutation(internal.ttsRulings.internalRecordRuling, { repo: "tom.quest", externalId: "cmt-001", verdict: "approve" }),
     ).rejects.toThrow(/is not a change/);
-    const rulings = await tom.query(api.ttsRulings.listRulings, {});
+    const rulings = await tom.query(internal.ttsRulings.internalRecentRulings, { limit: 1000 });
     expect(rulings).toHaveLength(1);
     expect(rulings[0].appliedAt).toBeUndefined();
     expect(rulings[0].applyResult).toBeUndefined();
@@ -272,7 +270,7 @@ describe("TTS unified rulings", () => {
         sentence: verdict === "revise" ? "shorter" : undefined,
       });
     }
-    const rulings = await tom.query(api.ttsRulings.listRulings, {});
+    const rulings = await tom.query(internal.ttsRulings.internalRecentRulings, { limit: 1000 });
     const by = (verdict: string) => rulings.find((r) => r.verdict === verdict)!;
     expect(by("approve").applyResult).toBe("plan ratified");
     expect(by("archive").applyResult).toBe("status archived");
@@ -289,7 +287,7 @@ describe("TTS unified rulings", () => {
       todoId: ids.session,
       initialPrompt: "hello",
     });
-    const after = (await tom.query(api.ttsRulings.listRulings, {})).find(
+    const after = (await tom.query(internal.ttsRulings.internalRecentRulings, { limit: 1000 })).find(
       (r) => r.verdict === "session",
     )!;
     expect(after.applyResult).toBe(`session ${sessionId}`);
@@ -329,7 +327,7 @@ describe("TTS unified rulings", () => {
       repo: "tom.quest",
       initialPrompt: "hello",
     });
-    const rulings = await tom.query(api.ttsRulings.listRulings, {});
+    const rulings = await tom.query(internal.ttsRulings.internalRecentRulings, { limit: 1000 });
     const session = rulings.find((r) => r.externalId === "c-session")!;
     expect(session.applyResult).toBe(`session ${sessionId}`);
     // The other three still ride the feed for their consumers: the planner's
@@ -381,7 +379,7 @@ describe("TTS unified rulings", () => {
     expect(text).not.toContain("c-old");
     expect(text).not.toContain("c-done");
 
-    const rulings = await tom.query(api.ttsRulings.listRulings, {});
+    const rulings = await tom.query(internal.ttsRulings.internalRecentRulings, { limit: 1000 });
     const by = (externalId: string, verdict: string) =>
       rulings.find((r) => r.externalId === externalId && r.verdict === verdict)!;
     expect(by("c-one", "session").applyResult).toBe(`session ${sessionId}`);
@@ -404,7 +402,7 @@ describe("TTS unified rulings", () => {
       todoId,
       verdict: "approve",
     });
-    const [ruling] = await tom.query(api.ttsRulings.listRulings, {});
+    const [ruling] = await tom.query(internal.ttsRulings.internalRecentRulings, { limit: 1000 });
     expect(ruling.appliedAt).toBeDefined();
     expect(ruling.applyResult).toBe("plan ratified");
     expect(
@@ -458,7 +456,7 @@ describe("TTS unified rulings", () => {
       verdict: "revise",
       sentence: "spoken in session",
     });
-    const [ruling] = await tom.query(api.ttsRulings.listRulings, {});
+    const [ruling] = await tom.query(internal.ttsRulings.internalRecentRulings, { limit: 1000 });
     expect(ruling.verdict).toBe("revise");
     expect(ruling.sentence).toBe("spoken in session");
     const todo = await t.run(async (ctx) =>
@@ -540,10 +538,10 @@ describe("TTS unified rulings", () => {
       id,
       result: "https://github.com/Heffnt/tom.quest/pull/99",
     });
-    const [row] = await tom.query(api.ttsRulings.listRulings, {});
+    const [row] = await tom.query(internal.ttsRulings.internalRecentRulings, { limit: 1000 });
     expect(row.appliedAt).toBeDefined();
     expect(row.applyResult).toBe("https://github.com/Heffnt/tom.quest/pull/99");
-    const events = await tom.query(api.tts.listRecentEvents, {});
+    const events = await t.run((ctx) => ctx.db.query("dtsEvents").collect());
     expect(events.some((e) => e.kind === "ruling-applied")).toBe(true);
     await expect(
       t.mutation(internal.ttsRulings.internalMarkRulingApplied, {
@@ -568,7 +566,7 @@ describe("TTS unified rulings", () => {
     await expect(
       t.mutation(internal.ttsRulings.internalMarkRulingApplied, { id: newer, result: "second" }),
     ).rejects.toThrow(/already applied/);
-    const rows = await tom.query(api.ttsRulings.listRulings, {});
+    const rows = await tom.query(internal.ttsRulings.internalRecentRulings, { limit: 1000 });
     expect(rows.find((r) => r._id === older)?.appliedAt).toBeUndefined();
     expect(rows.find((r) => r._id === newer)?.applyResult).toBe("first");
   });
@@ -588,7 +586,7 @@ describe("TTS unified rulings", () => {
       verdict: "session",
       sentence: "I want to see the numbers first",
     });
-    const rulings = await tom.query(api.ttsRulings.listRulings, {});
+    const rulings = await tom.query(internal.ttsRulings.internalRecentRulings, { limit: 1000 });
     const [plainA, plainS] = [await plainId(t, a), await plainId(t, s)];
     expect(rulings.find((r) => r.todoId === plainA)?.sentence).toBe(
       "yes, and keep the scope to the kitchen",
@@ -605,7 +603,7 @@ describe("TTS unified rulings", () => {
     });
     const plainB = await plainId(t, b);
     expect(
-      (await tom.query(api.ttsRulings.listRulings, {})).find(
+      (await tom.query(internal.ttsRulings.internalRecentRulings, { limit: 1000 })).find(
         (r) => r.todoId === plainB,
       )?.sentence,
     ).toBeUndefined();
@@ -709,7 +707,7 @@ describe("a ruling from Tom's words", () => {
       quote: "archive the dentist one, I already went.",
     });
     expect(res.status).toBe(200);
-    const [ruling] = await tom.query(api.ttsRulings.listRulings, {});
+    const [ruling] = await tom.query(internal.ttsRulings.internalRecentRulings, { limit: 1000 });
     expect(ruling.verdict).toBe("archive");
     expect(ruling.todoId).toBe(await plainId(t, todoId));
     expect(ruling.provenance).toEqual({
@@ -728,7 +726,7 @@ describe("a ruling from Tom's words", () => {
     expect(ruling.sentence).toBeUndefined();
     expect(todo.unarchiveCondition).toBeUndefined();
     // The digest reads events: the ruling event carries the provenance.
-    const events = await tom.query(api.tts.listRecentEvents, {});
+    const events = await t.run((ctx) => ctx.db.query("dtsEvents").collect());
     const event = events.find((e) => e.kind === "ruling");
     expect(event?.data?.provenance?.from).toBe("tom-words");
   });
@@ -755,7 +753,7 @@ describe("a ruling from Tom's words", () => {
     });
     expect(noted.status).toBe(400);
     expect((await noted.json()).error).toMatch(/revise redirect only/);
-    expect(await tom.query(api.ttsRulings.listRulings, {})).toHaveLength(0);
+    expect(await tom.query(internal.ttsRulings.internalRecentRulings, { limit: 1000 })).toHaveLength(0);
     // The quote may be the redirect itself.
     const revised = await post(t, {
       ...body,
@@ -763,7 +761,7 @@ describe("a ruling from Tom's words", () => {
       sentence: "archive the dentist one, I already went.",
     });
     expect(revised.status).toBe(200);
-    const [ruling] = await tom.query(api.ttsRulings.listRulings, {});
+    const [ruling] = await tom.query(internal.ttsRulings.internalRecentRulings, { limit: 1000 });
     expect(ruling.sentence).toBe("archive the dentist one, I already went.");
     expect(ruling.provenance?.quote).toBe(
       "archive the dentist one, I already went.",
@@ -788,7 +786,7 @@ describe("a ruling from Tom's words", () => {
     });
     expect(composed.status).toBe(400);
     expect((await composed.json()).error).toMatch(/redirect must be a whole sentence/);
-    expect(await tom.query(api.ttsRulings.listRulings, {})).toHaveLength(0);
+    expect(await tom.query(internal.ttsRulings.internalRecentRulings, { limit: 1000 })).toHaveLength(0);
     // A second turn of Tom's, with the redirect as its own sentence.
     await tom.mutation(api.claudeSessions.sendMessage, {
       sessionId,
@@ -817,7 +815,7 @@ describe("a ruling from Tom's words", () => {
       sentence: "book the hygienist, not the dentist",
     });
     expect(whole.status).toBe(200);
-    const [ruling] = await tom.query(api.ttsRulings.listRulings, {});
+    const [ruling] = await tom.query(internal.ttsRulings.internalRecentRulings, { limit: 1000 });
     // Both stored as the turn's own text, terminators included.
     expect(ruling.sentence).toBe("book the hygienist, not the dentist!");
     expect(ruling.provenance?.quote).toBe("no wait, revise it.");
@@ -835,7 +833,7 @@ describe("a ruling from Tom's words", () => {
     });
     expect(res.status).toBe(400);
     expect((await res.json()).error).toMatch(/not typed by Tom/);
-    expect(await tom.query(api.ttsRulings.listRulings, {})).toHaveLength(0);
+    expect(await tom.query(internal.ttsRulings.internalRecentRulings, { limit: 1000 })).toHaveLength(0);
   });
 
   // witness: put `row.text.includes(quoted)` back in place of matchQuotedUnit
@@ -859,7 +857,7 @@ describe("a ruling from Tom's words", () => {
       expect(res.status).toBe(400);
       expect((await res.json()).error).toMatch(/whole sentence|exactly one sentence/);
     }
-    expect(await tom.query(api.ttsRulings.listRulings, {})).toHaveLength(0);
+    expect(await tom.query(internal.ttsRulings.internalRecentRulings, { limit: 1000 })).toHaveLength(0);
   });
 
   // The terminator is not part of the unit, and a "." inside a token ("1.5",
@@ -900,7 +898,7 @@ describe("a ruling from Tom's words", () => {
       quote: "archive the dentist one, I already went!",
     });
     expect(res.status).toBe(200);
-    const [ruling] = await tom.query(api.ttsRulings.listRulings, {});
+    const [ruling] = await tom.query(internal.ttsRulings.internalRecentRulings, { limit: 1000 });
     expect(ruling.provenance?.quote).toBe("archive the dentist one, I already went.");
   });
 
@@ -918,7 +916,7 @@ describe("a ruling from Tom's words", () => {
       expect(refused.status).toBe(400);
       expect(await refused.text()).toContain("the record no longer holds");
     }
-    expect(await tom.query(api.ttsRulings.listRulings, {})).toEqual([]);
+    expect(await tom.query(internal.ttsRulings.internalRecentRulings, { limit: 1000 })).toEqual([]);
   });
 
   it("refuses the same turn ruling twice on the same subject", async () => {
@@ -935,7 +933,7 @@ describe("a ruling from Tom's words", () => {
     const again = await post(t, { ...body, verdict: "approve" });
     expect(again.status).toBe(400);
     expect((await again.json()).error).toMatch(/already ruled/);
-    expect(await tom.query(api.ttsRulings.listRulings, {})).toHaveLength(1);
+    expect(await tom.query(internal.ttsRulings.internalRecentRulings, { limit: 1000 })).toHaveLength(1);
   });
 
   it("refuses an unknown row, a bad verdict, and the wrong key", async () => {
@@ -1017,7 +1015,7 @@ describe("a ruling from Tom's words", () => {
     });
     expect(res.status).toBe(400);
     expect((await res.json()).error).toMatch(/author is unset/);
-    expect(await tom.query(api.ttsRulings.listRulings, {})).toHaveLength(0);
+    expect(await tom.query(internal.ttsRulings.internalRecentRulings, { limit: 1000 })).toHaveLength(0);
   });
 
   // witness: drop the ctx.db.get after normalizeId in resolveSubject. A
@@ -1046,7 +1044,7 @@ describe("a ruling from Tom's words", () => {
     });
     expect(todoAsBatch.status).toBe(400);
     expect((await todoAsBatch.json()).error).toMatch(/subjectType must be one of life, code/);
-    expect(await tom.query(api.ttsRulings.listRulings, {})).toHaveLength(0);
+    expect(await tom.query(internal.ttsRulings.internalRecentRulings, { limit: 1000 })).toHaveLength(0);
   });
 
   // witness: set MIN_QUOTE_WORDS to 1 in convex/ttsRulings.ts. "ok" is a
@@ -1064,7 +1062,7 @@ describe("a ruling from Tom's words", () => {
     });
     expect(res.status).toBe(400);
     expect((await res.json()).error).toMatch(/single word/);
-    expect(await tom.query(api.ttsRulings.listRulings, {})).toHaveLength(0);
+    expect(await tom.query(internal.ttsRulings.internalRecentRulings, { limit: 1000 })).toHaveLength(0);
   });
 
   // witness: drop check 5 (refuseUnlessSessionSubject) from
@@ -1090,7 +1088,7 @@ describe("a ruling from Tom's words", () => {
     expect((await other.json()).error).toMatch(
       /session about the todo .*, not about this subject/,
     );
-    expect(await tom.query(api.ttsRulings.listRulings, {})).toHaveLength(0);
+    expect(await tom.query(internal.ttsRulings.internalRecentRulings, { limit: 1000 })).toHaveLength(0);
     expect((await post(t, { ...body, subjectId: todoId })).status).toBe(200);
   });
 
@@ -1116,7 +1114,7 @@ describe("a ruling from Tom's words", () => {
     ).rejects.toThrow(/batchId/);
     // A todo is still a subject at the same door.
     await tom.mutation(api.ttsRulings.recordRuling, { todoId, verdict: "approve" });
-    expect(await tom.query(api.ttsRulings.listRulings, {})).toHaveLength(1);
+    expect(await tom.query(internal.ttsRulings.internalRecentRulings, { limit: 1000 })).toHaveLength(1);
   });
 
   // The weekly session's turns rule on what its agenda names — the todo ids
@@ -1200,7 +1198,7 @@ describe("a ruling from Tom's words", () => {
       quote: "fork 2: approve the paper batch.",
     });
     expect(code.status).toBe(400);
-    const rulings = await tom.query(api.ttsRulings.listRulings, {});
+    const rulings = await tom.query(internal.ttsRulings.internalRecentRulings, { limit: 1000 });
     expect(rulings.map((r) => r.verdict).sort()).toEqual(["approve", "archive"]);
   });
 
@@ -1271,7 +1269,7 @@ describe("a ruling from Tom's words", () => {
     expect(other.status).toBe(400);
     expect((await other.json()).error).toMatch(/session about the "chores" block/);
     expect((await post(t, { ...body, subjectId: choreId })).status).toBe(200);
-    expect(await tom.query(api.ttsRulings.listRulings, {})).toHaveLength(1);
+    expect(await tom.query(internal.ttsRulings.internalRecentRulings, { limit: 1000 })).toHaveLength(1);
   });
 });
 
@@ -1388,7 +1386,7 @@ describe("a ruling schedules the label writer", () => {
     });
     await drain(t);
     expect(await t.run((ctx) => ctx.db.query("runLabels").collect())).toHaveLength(0);
-    const unlinked = (await tom.query(api.tts.listRecentEvents, {})).filter(
+    const unlinked = (await t.run((ctx) => ctx.db.query("dtsEvents").collect())).filter(
       (e) => e.kind === "agent-label-unlinked",
     );
     expect(unlinked).toHaveLength(1);
@@ -1398,6 +1396,6 @@ describe("a ruling schedules the label writer", () => {
       subjectKey: `life ${todoId}`,
     });
     // The ruling itself stands.
-    expect(await tom.query(api.ttsRulings.listRulings, {})).toHaveLength(1);
+    expect(await tom.query(internal.ttsRulings.internalRecentRulings, { limit: 1000 })).toHaveLength(1);
   });
 });

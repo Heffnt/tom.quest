@@ -19,7 +19,6 @@
 // The recursion is Agent → AgentRows → a `child-run` row → Agent at depth + 1. There
 // is no second component for a subagent and no single-level fold.
 
-import Link from "next/link";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
@@ -644,21 +643,10 @@ function Lead({
         </div>
       )}
       <div className="flex flex-wrap gap-x-3 text-text-faint">
-        {run?.todoId !== undefined && (
-          <Link
-            href={`/jarvis?item=${run.todoId}`}
-            className="text-accent underline underline-offset-2 hover:text-text"
-          >
-            linked item
-          </Link>
-        )}
-        {session?.todoId !== undefined && run?.todoId === undefined && (
-          <Link
-            href={`/jarvis?item=${session.todoId}`}
-            className="text-accent underline underline-offset-2 hover:text-text"
-          >
-            linked item
-          </Link>
+        {/* No page shows one todo since the /jarvis page went: the todo the
+            run or session is linked to is named, not linked. */}
+        {(run?.todoId !== undefined || session?.todoId !== undefined) && (
+          <span>linked to a todo</span>
         )}
         {continues !== undefined && (
           <button

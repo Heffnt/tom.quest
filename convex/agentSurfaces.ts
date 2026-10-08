@@ -17,10 +17,8 @@
 // server code here would drag that code into the browser bundle.
 //
 // HOW THE LIST WAS CHOSEN — from what was already written down, not a guess:
-//   - worker/bin/tts-browse's own header: "every /turing and /tts page is
-//     role-gated", naming exactly these two.
 //   - worker/README.md's two worked browse examples are both /turing.
-// DELIBERATELY ABSENT: "Sessions", "Forge" and /logo (a session
+// DELIBERATELY ABSENT: "TTS", "Sessions", "Forge" and /logo (a session
 // reading its own transcripts, or Tom's build surfaces, is not looking at a
 // change it made), and /canvas (its agent route spends LLM credits).
 //
@@ -29,7 +27,7 @@
 // "History" (2026-10-06): the /history page, so the box's browser can look
 // at the page it built; the page writes nothing, and the rows it shows are
 // ones a box agent already reads through GET /jarvis/events.
-export const AGENT_READABLE_SURFACES = ["TTS", "Turing", "History"] as const;
+export const AGENT_READABLE_SURFACES = ["Turing", "History"] as const;
 
 export type AgentReadableSurface = (typeof AGENT_READABLE_SURFACES)[number];
 

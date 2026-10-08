@@ -9,19 +9,14 @@
 import { useState } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
-import type { Doc, Id } from "@/convex/_generated/dataModel";
-import { isPrepared } from "@/convex/ttsShared";
+import type { Id } from "@/convex/_generated/dataModel";
 import type { SessionModel } from "@/convex/ttsShared";
-import {
-  buildTodoSessionPrompt,
-  type LiveRulingContext,
-} from "@/app/lib/tts-session-prompt";
 
 // A browser tab claimed during the click itself, before the createSession
 // round trip. Browsers only honour window.open inside the user-gesture call
 // stack, so callers reserve first and point the tab at the session once the
 // id comes back; a failed mutation closes it again.
-export type ReservedTab = {
+type ReservedTab = {
   goto: (sessionId: string) => void;
   close: () => void;
 };
@@ -113,38 +108,6 @@ export function useOpenSession() {
     } finally {
       setBusy(false);
     }
-  };
-
-  return { open, busy, error };
-}
-
-export function useOpenTodoSession() {
-  const { open: openSession, busy, error } = useOpenSession();
-
-  const open = async (
-    todo: Doc<"todos">,
-    opts?: {
-      fireEngaged?: (id: Id<"todos">) => void;
-      // A tab the caller already reserved in its own click handler (e.g. the
-      // session verdict, which records a ruling first). Omit it and open
-      // reserves one itself — synchronously, before the mutation.
-      tab?: ReservedTab;
-      // The ruling just recorded (session verdict path) — its sentence goes
-      // into the session prompt so Tom never repeats himself.
-      ruling?: LiveRulingContext;
-    },
-  ) => {
-    // A prepared item is worked as a gate session (spec §15); a raw one is a
-    // focus-item session. ttsShared.isPrepared reads the retired spellings too.
-    const kind = isPrepared(todo.readiness) ? "gate" : "focus-item";
-    await openSession({
-      title: todo.statement,
-      kind,
-      todoId: todo._id,
-      tab: opts?.tab,
-      before: () => opts?.fireEngaged?.(todo._id),
-      initialPrompt: buildTodoSessionPrompt(todo, kind, opts?.ruling),
-    });
   };
 
   return { open, busy, error };

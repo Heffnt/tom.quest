@@ -114,7 +114,7 @@ describe("TTS todos", () => {
     await expect(user.query(api.tts.listTodos, {})).rejects.toThrow();
   });
 
-  it("creates, lists, and instruments a todo", async () => {
+  it("creates and lists a todo", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const id = await tom.mutation(api.tts.createTodo, {
@@ -129,15 +129,18 @@ describe("TTS todos", () => {
     expect(todos[0].dateKind).toBe("self-imposed");
     expect(todos[0].readiness).toBe("unprepared");
     expect(todos[0].status).toBe("active");
-    const events = await tom.query(api.tts.listRecentEvents, {});
+    const events = await t.run((ctx) => ctx.db.query("dtsEvents").collect());
     expect(events.some((e) => e.kind === "created" && e.todoId === todos[0]._id)).toBe(true);
   });
 
-  it("promotes whenever to dated when a date is set (spec §5.2)", async () => {
+  it("promotes whenever to dated when triage sets a date (spec §5.2)", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const id = await tom.mutation(api.tts.createTodo, { statement: "clean room" });
-    await tom.mutation(api.tts.updateTodo, { id, dueAt: Date.now() + 86_400_000 });
+    await t.mutation(internal.tts.internalTriage, {
+      id,
+      dueAt: Date.now() + 86_400_000,
+    });
     const [todo] = await tom.query(api.tts.listTodos, {});
     expect(todo.timingClass).toBe("dated");
     expect(todo.dateKind).toBe("self-imposed");
@@ -193,33 +196,28 @@ describe("TTS todos", () => {
       statement: "submit form",
       dueAt: Date.now() + 86_400_000,
     });
-    await tom.mutation(api.tts.setStatus, { id, status: "done" });
+    await t.mutation(internal.tts.internalTriage, { id, status: "done" });
     const [todo] = await tom.query(api.tts.listTodos, {});
     expect(todo.status).toBe("done");
     expect(todo.doneAt).toBeDefined();
     expect(todo.dateOutcomes?.[0].outcome).toBe("done");
   });
 
-  it("refuses to clear a date silently and clears terminal facts on reopen", async () => {
+  it("clears terminal facts on reopen", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const id = await tom.mutation(api.tts.createTodo, {
       statement: "dated thing",
       dueAt: Date.now() + 86_400_000,
     });
-    // The silent slide is forbidden (spec §8): dueAt:null is refused.
-    await expect(
-      tom.mutation(api.tts.updateTodo, { id, dueAt: null }),
-    ).rejects.toThrow(/never cleared silently/);
-
     // Archive with an unarchive condition, then reactivate: the stale
     // terminal facts must not linger on the live item.
-    await tom.mutation(api.tts.setStatus, {
+    await t.mutation(internal.tts.internalTriage, {
       id,
       status: "archived",
       unarchiveCondition: "when Ana replies",
     });
-    await tom.mutation(api.tts.setStatus, { id, status: "active" });
+    await t.mutation(internal.tts.internalTriage, { id, status: "active" });
     const [todo] = await tom.query(api.tts.listTodos, {});
     expect(todo.status).toBe("active");
     expect(todo.archivedAt).toBeUndefined();
@@ -372,7 +370,7 @@ describe("TTS todos", () => {
 });
 
 describe("TTS category", () => {
-  it("createTodo/updateTodo round-trip category, null clears", async () => {
+  it("createTodo/internalBulkUpdate round-trip category, null clears", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const id = await tom.mutation(api.tts.createTodo, {
@@ -381,10 +379,14 @@ describe("TTS category", () => {
     });
     let [todo] = await tom.query(api.tts.listTodos, {});
     expect(todo.category).toBe("chores");
-    await tom.mutation(api.tts.updateTodo, { id, category: "errands" });
+    await t.mutation(internal.tts.internalBulkUpdate, {
+      updates: [{ id, category: "errands" }],
+    });
     [todo] = await tom.query(api.tts.listTodos, {});
     expect(todo.category).toBe("errands");
-    await tom.mutation(api.tts.updateTodo, { id, category: null });
+    await t.mutation(internal.tts.internalBulkUpdate, {
+      updates: [{ id, category: null }],
+    });
     [todo] = await tom.query(api.tts.listTodos, {});
     expect(todo.category).toBeUndefined();
   });
@@ -470,7 +472,7 @@ describe("TTS annotations and the preparer", () => {
     });
     todos = await tom.query(api.tts.listTodos, {});
     expect(todos[0].dueAt).toBe(due);
-    const events = await tom.query(api.tts.listRecentEvents, {});
+    const events = await t.run((ctx) => ctx.db.query("dtsEvents").collect());
     expect(events.some((e) => e.kind === "due-skipped")).toBe(true);
   });
 
@@ -500,7 +502,7 @@ describe("TTS annotations and the preparer", () => {
     [todo] = await tom.query(api.tts.listTodos, {});
     expect(todo.dueAt).toBeUndefined();
     expect(todo.timingClass).toBe("whenever");
-    const events = await tom.query(api.tts.listRecentEvents, {});
+    const events = await t.run((ctx) => ctx.db.query("dtsEvents").collect());
     expect(events.some((e) => e.kind === "due-skipped")).toBe(true);
   });
 

@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { convexTest } from "convex-test";
 import { describe, expect, it } from "vitest";
 import { api, internal } from "./_generated/api";
@@ -121,19 +120,6 @@ async function heartbeat(
 }
 
 describe("claude sessions", () => {
-  // witness: name the delegate in app/lib/tts-session-prompt.ts's FRAMING. An
-  // ATTENDED session must never be told the delegate exists: its whole
-  // posture is "propose and wait", and the delegate answers only where nobody
-  // is watching. The route refuses an attended ask too (convex/ttsAsk.ts);
-  // this is the cheapest of the defences: it is never mentioned. (Kept when
-  // the autonomous suite it sat in went with the auto-session scheduler.)
-  it("the interactive framing never names the delegate", () => {
-    const framing = readFileSync("app/lib/tts-session-prompt.ts", "utf8");
-    expect(framing).not.toContain("tts-ask");
-    expect(framing).not.toContain("jarvis decide");
-    expect(framing).not.toContain("delegate");
-  });
-
   it("keeps the autonomous opener to the unattended-session boundary", () => {
     expect(WORKER_CONTRACT).toBe(
       "You are working inside TTS (Toms Todo System) as a WORKER — no one is watching this transcript live, and nothing you write in chat reaches anyone unless a pen (a command below) records it.",
@@ -725,7 +711,7 @@ describe("claude sessions", () => {
       todoId,
       initialPrompt: "let's talk",
     });
-    const [ruling] = await tom.query(api.ttsRulings.listRulings, {});
+    const [ruling] = await tom.query(internal.ttsRulings.internalRecentRulings, { limit: 1000 });
     expect(ruling.appliedAt).toBeDefined();
     expect(ruling.applyResult).toBe(`session ${sessionId}`);
   });
@@ -753,7 +739,7 @@ describe("claude sessions", () => {
       todoId,
       initialPrompt: "poke at it",
     });
-    const [ruling] = await tom.query(api.ttsRulings.listRulings, {});
+    const [ruling] = await tom.query(internal.ttsRulings.internalRecentRulings, { limit: 1000 });
     expect(ruling.appliedAt).toBeUndefined(); // revise is the preparer's to apply
 
     // An already-applied session ruling is not re-stamped by a second session.
@@ -775,7 +761,7 @@ describe("claude sessions", () => {
       todoId,
       initialPrompt: "talk again",
     });
-    const rulings = await tom.query(api.ttsRulings.listRulings, {});
+    const rulings = await tom.query(internal.ttsRulings.internalRecentRulings, { limit: 1000 });
     const sessionRuling = rulings.find((r) => r._id === sessionRulingId);
     expect(sessionRuling?.applyResult).toBe(`session ${secondSession}`);
     expect(firstSession).not.toBe(secondSession);

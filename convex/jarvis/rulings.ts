@@ -57,7 +57,6 @@ import { httpAction, internalMutation } from "../_generated/server";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import type { Doc, Id } from "../_generated/dataModel";
 import { internal } from "../_generated/api";
-import { isRulingVerdict } from "../ttsRulings";
 import { nyCalendarDayKey } from "../ttsShared";
 import { MIB, ReadBudget, readWithin } from "../readBudget";
 import { jarvisAuth, jsonResponse } from "./auth";
@@ -66,6 +65,15 @@ import { insertEvent } from "./record";
 async function sha256Hex(text: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function isRulingVerdict(
+  value: unknown,
+): value is "approve" | "revise" | "session" | "archive" {
+  return (
+    typeof value === "string" &&
+    ["approve", "revise", "session", "archive"].includes(value)
+  );
 }
 
 export const postRuling = httpAction(async (ctx, request) => {

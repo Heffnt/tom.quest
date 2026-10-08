@@ -26,7 +26,6 @@ export const PAGES: Page[] = [
   { slug: "clouds", title: "Clouds", blurb: "Interactive LiDAR viewer",     priority: 6, visibility: "public" },
   { slug: "perfume", title: "Perfume", blurb: "Three Feifs perfumer's bench", priority: 6, visibility: "public" },
   { slug: "sessions", title: "Sessions", blurb: "Every session: its transcript, its background agents, and the composer", priority: 11, visibility: "tom" },
-  { slug: "jarvis", title: "Jarvis", blurb: "Todos, calendar and what waits on a ruling", priority: 9, visibility: "tom", agentReadable: true },
   { slug: "history", title: "History", blurb: "Diet, training, what you told Jarvis and what Jarvis did, by day", priority: 9, visibility: "tom", agentReadable: true },
   { slug: "forge",  title: "Forge",  blurb: "Build & train backdoors",      priority: 5, visibility: "tom" },
   { slug: "questions", title: "Questions", blurb: "One question at a time, by type, frame and topic", priority: 5, visibility: "tom" },

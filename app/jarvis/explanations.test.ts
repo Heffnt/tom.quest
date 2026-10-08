@@ -117,11 +117,11 @@ describe("caption ground-up explanations", () => {
 // mounting each surface to count them would test the surfaces rather than the
 // rule.
 //
-// `<Info>` is the caption control (./components/info); `<Caption>` is the thin
-// wrapper todo-row.tsx puts around it. Both are checked. info.tsx itself is
-// skipped — it DEFINES the prop — and so are the tests.
+// `<Info>` is the shared caption control; `<Caption>` is the legacy wrapper
+// around it. Both are checked. info.tsx itself is skipped — it DEFINES the
+// prop — and so are the tests.
 
-/** Every .tsx under app/jarvis that is not a test and not the control itself. */
+/** Every app .tsx that is not a test and not the control itself. */
 function captionSources(dir: string): string[] {
   const out: string[] = [];
   for (const name of readdirSync(dir)) {
@@ -203,9 +203,9 @@ function saysSomething(children: string): boolean {
 }
 
 describe("every document is opened from a caption, and every caption explains", () => {
-  const files = captionSources(join(__dirname));
+  const files = captionSources(join(__dirname, ".."));
   const sources = files.map((f) => ({
-    short: f.slice(f.indexOf("app/jarvis")).replace(/\\/g, "/"),
+    short: f.slice(f.indexOf("app/")).replace(/\\/g, "/"),
     src: readFileSync(f, "utf8"),
   }));
 

@@ -1,13 +1,19 @@
 import { expect, test } from "@playwright/test";
 
 // The pages renamed or removed (next.config.ts redirects): every link to /tts
-// already sent to Slack lands on /jarvis with its query, and a link to the
-// removed /agents, /runs, /observe and /thread pages lands on /sessions. The
+// already sent to Slack passes through the removed /jarvis page to /sessions
+// with its query, and a link to the removed /agents, /runs, /observe and
+// /thread pages lands on /sessions. The
 // targets are Tom's, so a guest sees their gate; the address is the claim.
 
-test("an old /tts link lands on /jarvis with its query", async ({ page }) => {
+test("an old /tts link lands on /sessions with its query", async ({ page }) => {
   await page.goto("/tts?item=abc&intent=done");
-  await expect(page).toHaveURL(/\/jarvis\?item=abc&intent=done$/);
+  await expect(page).toHaveURL(/\/sessions\?item=abc&intent=done$/);
+});
+
+test("/jarvis lands on /sessions with its query", async ({ page }) => {
+  await page.goto("/jarvis?item=abc&intent=done");
+  await expect(page).toHaveURL(/\/sessions\?item=abc&intent=done$/);
 });
 
 test("an old /agents link lands on /sessions with its query", async ({ page }) => {
