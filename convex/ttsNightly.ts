@@ -20,7 +20,7 @@ import { v } from "convex/values";
 import { internalMutation, internalQuery } from "./_generated/server";
 import { clip } from "../shared/clip.mjs";
 import { rowSource, type RowSource } from "./sessionRows";
-// The kinds this pen routes onward besides LEARNING_CHANGE. Their rows,
+// The kinds this pen routes onward. Their rows,
 // their fields and the reasoning are documented where they are declared.
 import { BOX_CHANGE, boxChangeEvent, boxChangeFaults, type BoxChange } from "./boxChanges";
 import { copyDtsRow, recordEvent } from "./jarvis/events";
@@ -444,9 +444,6 @@ export const internalConsumeLearningObjections = internalMutation({
 // commit it is about to push, which the merge gate reads: convex/ttsMerge.ts
 // NIGHTLY_RUN); the pattern keeps the pen to lowercase kebab-case names.
 export const EVENT_KIND_PATTERN = /^[a-z][a-z0-9-]{1,63}$/;
-
-/** Kinds written by the nightly job. */
-export const LEARNING_CHANGE = "learning-change";
 
 /**
  * A box change posted through the legacy pen (POST /tts/event, body { kind:
